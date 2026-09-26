@@ -104,6 +104,8 @@ def instrument_entries() -> Iterator[Counters]:
 
 def run_entry(path: Path, entry: EntryPoint = "stream_clauses") -> Outcome:
     """Run *entry* on *path*, capturing stdout/stderr and the elapsed time."""
+    if entry not in ("stream_clauses", "parse_document", "_parser_for"):
+        raise ValueError(f"unknown entry point: {entry!r}")
     out_buf = io.StringIO()
     err_buf = io.StringIO()
     old_out, old_err = sys.stdout, sys.stderr
@@ -113,8 +115,6 @@ def run_entry(path: Path, entry: EntryPoint = "stream_clauses") -> Outcome:
     category: str | None = None
     error: BaseException | None = None
     clause_count = 0
-    if entry not in ("stream_clauses", "parse_document", "_parser_for"):
-        raise ValueError(f"unknown entry point: {entry!r}")
     try:
         if entry == "stream_clauses":
             for _clause in _stream.stream_clauses(path):
