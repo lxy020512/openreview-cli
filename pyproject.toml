@@ -38,6 +38,7 @@ openreview = "openreview_cli.app:app"
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.168.1",
     "mypy>=2.1.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=0.24.0",
