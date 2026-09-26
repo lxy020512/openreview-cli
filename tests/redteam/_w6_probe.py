@@ -98,6 +98,7 @@ def config_yml(tier: str, primary: str, enc_key: str | None = None) -> str:
         lines.append(f"  pii_encryption_key: {enc_key}")
     lines += [
         "gateway:",
+        "  model_registry_refresh_days: 0",
         "  models:",
         "    extraction:",
         f"      primary: {primary}",
@@ -213,20 +214,30 @@ def demonstrate_leak_is_visible(canary: str) -> str:
     Returns the rendered stream. Used by each suite's negative control to show
     that the log surface CAN carry the material, so a green absence assertion
     is not vacuous (plan section 9.3 rule 1).
+
+    The other root handlers are detached first: ``RedactingFilter.filter``
+    mutates the ``LogRecord`` in place (``redaction.py:44-48``), so a filtered
+    handler left behind by an earlier test would redact the record before this
+    one sees it, hiding the demonstration.
     """
     import io
 
     root = logging.getLogger()
+    saved = list(root.handlers)
+    for handler in saved:
+        root.removeHandler(handler)
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
-    root.addHandler(handler)
     level = root.level
+    root.addHandler(handler)
     root.setLevel(logging.DEBUG)
     try:
         logging.getLogger("openreview_cli.gateway.router").debug("Set OPENAI_API_KEY to %s", canary)
     finally:
         root.removeHandler(handler)
         root.setLevel(level)
+        for handler in saved:
+            root.addHandler(handler)
     return stream.getvalue()
 
 
