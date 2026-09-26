@@ -1,0 +1,14 @@
+MUTUAL NON-DISCLOSURE AGREEMENT
+
+This Agreement is entered into by and between Zarquon Holdings LLC and the
+Receiving Party, and the Receiving Party shall use the Zarquon-CANARY-7f3a9
+reference code solely for internal filing purposes.
+
+Confidential Information means any information disclosed by the Disclosing
+Party to the Receiving Party that is marked confidential, or that a reasonable
+person would understand to be confidential given the nature of the information
+and the circumstances of disclosure.
+
+Notices under this Agreement shall be addressed to the undersigned at the
+canary mailbox zq.canary.7f3a9@example-inbound.test or at such other address as
+a party may designate in writing.
