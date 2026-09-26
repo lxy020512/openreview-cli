@@ -164,6 +164,9 @@ markers = [
     "network: marks tests requiring HuggingFace hub network access (legal-bert model download)",
     "live: tests requiring live network (run with '-m live')",
     "no_memory: marks tests excluded from memory-tracked runs",
+    "fuzz: adversarial/automated hostile-input fuzzing suites (documentation label)",
+    "chaos: fault-injection and honest-degradation chaos suites (documentation label)",
+    "redteam: attacks on the product's privacy and secrecy guarantees (documentation label)",
 ]
 filterwarnings = ["ignore::DeprecationWarning"]
 timeout = 60
