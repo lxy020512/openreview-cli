@@ -70,6 +70,17 @@ def assert_typed_gateway_error(
     assert provider in str(exc), f"the error does not name the failing provider: {exc!r}"
 
 
+def assert_stream_degraded_honestly(outcome: _w7.StreamOutcome, provider: str) -> None:
+    """The W7b oracle: a stream either completes with its ``done`` marker, or fails typed."""
+    if outcome.caught is not None:
+        assert_typed_gateway_error(outcome.caught, GatewayError, provider)
+        return
+    assert outcome.completed, (
+        f"the stream ended without a completion marker: events={outcome.events} "
+        f"chunks={outcome.chunks}"
+    )
+
+
 # ── W7a: the in-process fault matrix ────────────────────────────────────────
 
 
@@ -228,6 +239,17 @@ def test_negative_control_oracle_rejects_a_raw_exception() -> None:
 STREAM_PROVIDER = "openai"
 
 
+def test_negative_control_stream_oracle_rejects_a_raw_escape_and_a_silent_end() -> None:
+    """The W7b oracle must reject both dishonest stream outcomes (plan 9.3 rule 1)."""
+    raw = _w7.StreamOutcome(events=[], chunks=[], caught=RuntimeError("raw upstream failure"))
+    with pytest.raises(AssertionError, match="is not a typed gateway error"):
+        assert_stream_degraded_honestly(raw, STREAM_PROVIDER)
+
+    silent = _w7.StreamOutcome(events=["chunk"], chunks=["hi"], caught=None)
+    with pytest.raises(AssertionError, match="without a completion marker"):
+        assert_stream_degraded_honestly(silent, STREAM_PROVIDER)
+
+
 @pytest.fixture
 def stream_case(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stream_server: StreamServerFactory
@@ -277,7 +299,7 @@ def test_stream_dispatch_failure_is_a_typed_gateway_error(
     outcome = _w7.collect_stream(gw)
 
     assert outcome.caught is not None, "the stream fault did not surface at all"
-    assert_typed_gateway_error(outcome.caught, GatewayError, STREAM_PROVIDER)
+    assert_stream_degraded_honestly(outcome, STREAM_PROVIDER)
 
 
 @pytest.mark.enable_socket

@@ -47,6 +47,8 @@ class FlakyGatewayFactory:
         tier: str = "performance",
         primary: str = _w7.CLOUD_PRIMARY,
         retries: int = 2,
+        retry_delay: float = 0.0,
+        slot_fallback: str | None = None,
         registry: dict[str, ProviderInfo] | None = None,
         response: Any = None,
     ) -> _w7.FlakyGateway:
@@ -54,9 +56,22 @@ class FlakyGatewayFactory:
         root = self._tmp_path / f"build{self._built}"
         root.mkdir(parents=True, exist_ok=True)
         state = _w7.prepare_state(
-            self._monkeypatch, root, tier=tier, primary=primary, retries=retries
+            self._monkeypatch,
+            root,
+            tier=tier,
+            primary=primary,
+            retries=retries,
+            retry_delay=retry_delay,
+            slot_fallback=slot_fallback,
         )
-        gw = _w7.make_gateway(state, primary=primary, tier=tier, retries=retries)
+        gw = _w7.make_gateway(
+            state,
+            primary=primary,
+            tier=tier,
+            retries=retries,
+            retry_delay=retry_delay,
+            slot_fallback=slot_fallback,
+        )
         seam = _w7.FaultSeam(_w7.injected(fault), response)
         seam.install(self._monkeypatch)
         # Deterministic, offline pricing: litellm's own pricing lookup would need the

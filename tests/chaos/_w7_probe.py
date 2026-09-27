@@ -169,7 +169,14 @@ class State:
     output_dir: Path
 
 
-def config_body(*, tier: str, primary: str, retries: int, slot_fallback: str | None) -> str:
+def config_body(
+    *,
+    tier: str,
+    primary: str,
+    retries: int,
+    slot_fallback: str | None,
+    retry_delay: float = 0.0,
+) -> str:
     """Return the ``config.yml`` body a W7 suite drives the gateway against."""
     lines = [
         "privacy:",
@@ -184,7 +191,7 @@ def config_body(*, tier: str, primary: str, retries: int, slot_fallback: str | N
     lines += [
         "  fallback:",
         f"    retries: {retries}",
-        "    retry_delay: 0.0",
+        f"    retry_delay: {retry_delay}",
         "    timeout: 5",
     ]
     return "\n".join(lines) + "\n"
@@ -198,6 +205,7 @@ def prepare_state(
     primary: str = CLOUD_PRIMARY,
     retries: int = 2,
     slot_fallback: str | None = None,
+    retry_delay: float = 0.0,
 ) -> State:
     """Redirect every XDG root at *tmp_path* and seed a config and a database."""
     for var in XDG_VARS:
@@ -213,7 +221,13 @@ def prepare_state(
 
     config_path = config_dir / "config.yml"
     config_path.write_text(
-        config_body(tier=tier, primary=primary, retries=retries, slot_fallback=slot_fallback),
+        config_body(
+            tier=tier,
+            primary=primary,
+            retries=retries,
+            slot_fallback=slot_fallback,
+            retry_delay=retry_delay,
+        ),
         encoding="utf-8",
     )
 
@@ -233,7 +247,13 @@ def prepare_state(
 
 
 def make_gateway(
-    state: State, *, primary: str, tier: str = "performance", retries: int = 2
+    state: State,
+    *,
+    primary: str,
+    tier: str = "performance",
+    retries: int = 2,
+    retry_delay: float = 0.0,
+    slot_fallback: str | None = None,
 ) -> Gateway:
     """Partially construct a real ``Gateway`` over *state*'s database.
 
@@ -242,11 +262,14 @@ def make_gateway(
     back and cross-checked against the egress counter.
     """
     gw = Gateway.__new__(Gateway)
+    slot: dict[str, str] = {"primary": primary}
+    if slot_fallback is not None:
+        slot["fallback"] = slot_fallback
     gw._config = {
         "privacy": {"tier": tier},
         "gateway": {
-            "models": {"extraction": {"primary": primary}},
-            "fallback": {"retries": retries, "retry_delay": 0.0, "timeout": 5},
+            "models": {"extraction": slot, "reranking": dict(slot)},
+            "fallback": {"retries": retries, "retry_delay": retry_delay, "timeout": 5},
         },
     }
     gw._cloud_calls_made = 0
@@ -254,7 +277,6 @@ def make_gateway(
     gw._tier_config = TierConfig.from_config(gw._config)
     gw._auth = {}
     gw._data_path = state.db_path
-    gw._slots = None  # type: ignore[attr-defined]
     return gw
 
 
@@ -343,17 +365,56 @@ class FaultSeam:
         monkeypatch.setattr(router_mod, "completion", self)
 
 
+class FlakyDispatch:
+    """A seam that fails the first ``failures`` dispatches and then succeeds.
+
+    ``faults.apply`` can only start failing; the RT-028 retry path needs the
+    opposite shape (two failures, then a success) to cross-check ``cost_logs``
+    against the egress counter.
+    """
+
+    def __init__(
+        self, failures: int, error: type[Exception] = TimeoutError, response: Any = None
+    ) -> None:
+        self.failures = failures
+        self.error = error
+        self.response = CompletionResponse("ok") if response is None else response
+        self.models: list[str] = []
+
+    def __call__(self, **kwargs: Any) -> Any:
+        self.models.append(str(kwargs.get("model")))
+        if len(self.models) <= self.failures:
+            raise self.error(f"transient failure on dispatch {len(self.models)}")
+        return self.response
+
+    @property
+    def attempts(self) -> int:
+        """Every entry into the seam."""
+        return len(self.models)
+
+    def install(self, monkeypatch: Any) -> None:
+        """Patch ``router.completion`` in-process. No socket is involved."""
+        import openreview_cli.gateway.router as router_mod
+
+        monkeypatch.setattr(router_mod, "completion", self)
+
+
 class FlakyGateway:
     """One fault-injected gateway: the instance, the seam and the isolated state."""
 
     def __init__(
-        self, gw: Gateway, seam: FaultSeam, state: State, fault_name: str, monkeypatch: Any
+        self, gw: Gateway, seam: Any, state: State, fault_name: str, monkeypatch: Any
     ) -> None:
         self.gw = gw
         self.seam = seam
         self.state = state
         self.fault_name = fault_name
         self._monkeypatch = monkeypatch
+
+    def install_seam(self, seam: Any) -> None:
+        """Swap the dispatch seam for a different failure plan (fail-then-succeed)."""
+        self.seam = seam
+        seam.install(self._monkeypatch)
 
     def install_registry(self, registry: dict[str, ProviderInfo] | None = None) -> None:
         """Patch the registry and the ``Gateway`` factory the real CLI path imports."""
