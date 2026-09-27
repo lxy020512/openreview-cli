@@ -216,23 +216,28 @@ def test_unknown_override_provider_prefix_fails_closed(
 def test_unknown_slot_primary_prefix_is_dispatched_on_the_strict_tier(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """RT-026 pinned as observable behaviour: the guard returns at router.py:293-294."""
+    """RT-026 pinning node, inverted by R-01 (was: dispatched on the strict tier).
+
+    Before the fix the guard returned at ``router.py:293-294`` and dispatched
+    ``mystery/model`` three times. The slot-primary branch now fails closed like
+    the override branch (``router.py:252-272``): a typed error is raised before
+    the dispatch seam is reached.
+    """
     state = _w5.prepare_state(monkeypatch, tmp_path)
     monkeypatch.setattr("openreview_cli.gateway.router.load_registry", dict)
     gw = _w5.make_gateway(state, primary="mystery/model", tier="maximum")
     recorder = _w5.DispatchRecorder()
     recorder.install(monkeypatch)
 
-    with pytest.raises(UnclassifiedProviderError):
+    with pytest.raises(NoMatchingProviderError) as exc:
         gw.chat("extraction", [{"role": "user", "content": "hi"}])
 
-    assert recorder.models() == ["mystery/model"] * 3, recorder.summary()
-    assert recorder.sites() == ["completion"] * 3
+    assert "Unknown provider 'mystery'" in str(exc.value)
+    _w5.assert_no_dispatch(recorder, "unknown slot primary on the maximum tier")
     assert gw._cloud_calls_made == 0
     assert get_total_cloud_calls() == 0
 
 
-@pytest.mark.xfail(strict=True, reason="RT-026")
 def test_unknown_slot_primary_prefix_never_reaches_dispatch(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -378,10 +383,12 @@ def test_counter_equality_per_dispatch_site(
 def test_counter_inequality_rows_are_measured(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The five measured counter-equals-dispatch violations, as numbers.
+    """The measured counter-equals-dispatch violations, as numbers.
 
     This is the table the register records (RT-026, RT-027, RT-028, RT-029).
-    Every row is a real dispatch count against a real increment count.
+    Every row is a real dispatch count against a real increment count. The
+    RT-026 row is now equal (0 == 0): R-01 fails an unregistered slot primary
+    closed before the seam, so there is no dispatch to under-count.
     """
     state = _w5.prepare_state(monkeypatch, tmp_path)
     registry = {**_w5.cloud_registry(), **_w5.local_registry()}
@@ -408,12 +415,13 @@ def test_counter_inequality_rows_are_measured(
     assert gw.chat("extraction", [{"role": "user", "content": "hi"}]) == "ok"
     rows.append(SiteRow("chat, fallback model", len(fallback_runner.records), gw._cloud_calls_made))
 
-    # A slot primary the registry cannot resolve: guard open, counter silent.
+    # A slot primary the registry cannot resolve: R-01 fails it closed, so the
+    # guard blocks before the seam and the counter stays silent (0 == 0).
     unknown = _w5.DispatchRecorder()
     unknown.install(monkeypatch)
     monkeypatch.setattr("openreview_cli.gateway.router.load_registry", dict)
     gw = _w5.make_gateway(state, primary="mystery/model", tier="maximum")
-    with contextlib.suppress(UnclassifiedProviderError):
+    with contextlib.suppress(NoMatchingProviderError):
         gw.chat("extraction", [{"role": "user", "content": "hi"}])
     rows.append(SiteRow("chat, unknown slot primary", len(unknown.records), gw._cloud_calls_made))
 
@@ -431,7 +439,7 @@ def test_counter_inequality_rows_are_measured(
     assert rows == [
         SiteRow("chat, 2 retries", 3, 1),
         SiteRow("chat, fallback model", 4, 0),
-        SiteRow("chat, unknown slot primary", 3, 0),
+        SiteRow("chat, unknown slot primary", 0, 0),
         SiteRow("chat, unclassifiable provider", 3, 0),
     ], rows
 

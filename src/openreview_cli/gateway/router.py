@@ -225,7 +225,7 @@ class Gateway:
         primary = cfg.get("primary")
         return primary if isinstance(primary, str) and primary else None
 
-    def _enforce_tier(  # noqa: PLR0912 — tier rules branch on override vs slot, registry presence, klass, call_type, local_only, and PII gate (R3-5)
+    def _enforce_tier(  # noqa: PLR0911, PLR0912, PLR0915 — tier rules branch on override vs slot, registry presence, klass, call_type, local_only, and PII gate, and fail closed on an unregistered provider prefix (R3-5, R-01)
         self,
         slot: str,
         call_type: str,
@@ -291,6 +291,37 @@ class Gateway:
         else:
             info = self._resolve_provider_info(slot)
             if info is None:
+                # The slot primary's provider prefix is not in the registry (a
+                # custom or unknown provider). Fail closed for tier-restricted
+                # call types, mirroring the override branch above (:252-272):
+                # the slot primary is the model that will actually hit the
+                # network, so an unclassifiable destination must never reach the
+                # dispatch seam while the tier requires a local provider.
+                slot_prefix = self._get_slot_config(slot)["primary"].split("/")[0]
+                if call_type in ("embedding", "reranking"):
+                    local_only = tier_config.embeddings_local_only
+                elif call_type == "llm":
+                    local_only = tier_config.llm_local_only
+                else:
+                    return
+                if local_only:
+                    tier = tier_config.tier.upper()
+                    raise NoMatchingProviderError(
+                        f"{tier} privacy tier requires a local provider for "
+                        f"{call_type}. Unknown provider '{slot_prefix}' "
+                        f"(not in registry) cannot be classified as local. "
+                        f"Install Ollama and configure a local model, or "
+                        f"change privacy tier to 'balanced' or 'performance'."
+                    )
+                # Under balanced/performance an unknown slot primary still gets
+                # the PII gate.
+                if tier_config.pii_required_before_cloud and not _pii_available:
+                    raise PIIUnavailableError(
+                        f"{tier_config.tier.title()} privacy tier requires "
+                        "PII stripping before cloud calls. No successful "
+                        "strip was recorded for this operation. Run without "
+                        "--no-pii / --allow-partial-pii, or use a local provider."
+                    )
                 return
             try:
                 klass = classify_provider(info)
