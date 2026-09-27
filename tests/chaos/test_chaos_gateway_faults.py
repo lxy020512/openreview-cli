@@ -24,6 +24,9 @@ from pathlib import Path
 import pytest
 
 from openreview_cli.gateway.errors import (
+    ConnectionError as GatewayConnectionError,
+)
+from openreview_cli.gateway.errors import (
     GatewayError,
     RateLimitError,
     UnclassifiedProviderError,
@@ -97,10 +100,15 @@ def test_in_process_fault_is_a_typed_gateway_error(
     # Reachability: the retry loop really entered the dispatch seam.
     assert flaky.seam.attempts >= 1, "the dispatch seam was never reached"
     assert_typed_gateway_error(exc_info.value, expected, PROVIDER)
-    # Cost and counter invariants: a failed call earns neither.
+    # Cost and counter invariants: a failed call logs no cost, and earns only the
+    # dispatch attempts that actually reached the provider.
     assert _w7.cost_rows(flaky.state.db_path) == [], "a faulted call logged a cost"
-    assert flaky.gw._cloud_calls_made == 0, "a faulted call incremented the instance counter"
-    assert get_total_cloud_calls() == 0, "a faulted call incremented the process counter"
+    assert flaky.gw._cloud_calls_made == flaky.seam.attempts, (
+        "the counter must count every dispatch attempt"
+    )
+    assert get_total_cloud_calls() == flaky.seam.attempts, (
+        "the process counter must count every dispatch attempt"
+    )
 
 
 def test_in_process_matrix_records_an_outcome_per_fault_class(
@@ -139,20 +147,19 @@ def test_retries_are_exactly_three_attempts_for_a_transient_fault(
     assert flaky.seam.models == ["openai/gpt-4o"] * 3, flaky.seam.models
 
 
-# ── RT-038: a no-usable-choice response is dishonest twice ──────────────────
+# ── RT-038: a no-usable-choice reply must fail typed, with no cost row ──────
 #
 # ``delay`` (the W0 record that delivers no response) and ``empty_choices`` (the
-# real litellm shape for a filtered/tool-only reply) both reach ``router.py:603``
-# with a response that carries no choice. Today the call LOGS A COST before
-# crashing at ``router.py:609``.
+# real litellm shape for a filtered/tool-only reply) both reach ``chat`` with a
+# response that carries no usable choice. The reply is validated BEFORE the cost
+# row, so the call raises a typed ``UnclassifiedProviderError`` naming the
+# provider and leaves no ``cost_logs`` row. The dispatch is still counted
+# (#147/C2), so the counter is not what makes the dispatch observable.
 
 NO_CHOICE_CASES: tuple[str, ...] = ("delay", "empty_choices")
-# cost_cents written today per case (conftest pins completion_cost at USD 0.05).
-EXPECTED_NO_CHOICE_COST: dict[str, int] = {"delay": 0, "empty_choices": 5}
 
 
 @pytest.mark.parametrize("case", sorted(NO_CHOICE_CASES))
-@pytest.mark.xfail(strict=True, reason="RT-038")
 def test_no_choice_response_is_a_typed_error_and_logs_no_cost(
     flaky_gateway: FlakyGatewayFactory, case: str
 ) -> None:
@@ -167,27 +174,23 @@ def test_no_choice_response_is_a_typed_error_and_logs_no_cost(
 
 
 @pytest.mark.parametrize("case", sorted(NO_CHOICE_CASES))
-def test_no_choice_response_logs_a_cost_and_then_crashes_raw(
+def test_no_choice_response_is_typed_and_leaves_no_cost_row(
     flaky_gateway: FlakyGatewayFactory, case: str
 ) -> None:
-    """Characterisation pinning RT-038/RT-039: a cost row is written, then the raw crash.
+    """RT-038/RT-039 fixed: a no-choice reply is typed and books no cost.
 
-    ``delay`` delivers no response object at all, so ``log_call`` sees no usage and
-    writes a zero-cost row before ``router.py:609`` raises ``AttributeError``.
-    ``empty_choices`` is priced normally (5 cents here), so a NONZERO cost row exists
-    for a call whose reply the caller never received before ``router.py:609`` raises
-    ``IndexError``.
+    ``delay`` delivers no response object at all and ``empty_choices`` the real
+    litellm shape for a filtered/tool-only reply; both now raise the typed
+    ``UnclassifiedProviderError`` naming the provider, without writing the
+    ``cost_logs`` row the old path wrote before it dereferenced the reply. The
+    dispatch is still counted (#147/C2).
     """
     flaky = _build_no_choice(flaky_gateway, case)
 
-    with pytest.raises((AttributeError, IndexError)) as exc_info:
+    with pytest.raises(UnclassifiedProviderError):
         flaky.chat()
 
-    assert not isinstance(exc_info.value, GatewayError), "RT-038 would be fixed"
-    rows = _w7.cost_rows(flaky.state.db_path)
-    assert len(rows) == 1, f"expected exactly one (dishonest) cost row, saw {rows}"
-    assert rows[0][0] == "openai/gpt-4o", rows
-    assert rows[0][2] == EXPECTED_NO_CHOICE_COST[case], rows
+    assert _w7.cost_rows(flaky.state.db_path) == [], "a call with no usable reply logged a cost"
     assert flaky.gw._cloud_calls_made == 1, "the counter did count the dispatch"
 
 
@@ -289,7 +292,6 @@ def test_healthy_local_stream_completes_with_chunks_and_done(
 
 @pytest.mark.enable_socket
 @pytest.mark.parametrize("mode", ["malformed_body", "provider_down"])
-@pytest.mark.xfail(strict=True, reason="RT-040")
 def test_stream_dispatch_failure_is_a_typed_gateway_error(
     stream_case: Callable[[str], tuple[_w7.LocalSSEServer, Gateway]], mode: str
 ) -> None:
@@ -304,23 +306,22 @@ def test_stream_dispatch_failure_is_a_typed_gateway_error(
 
 @pytest.mark.enable_socket
 @pytest.mark.parametrize("mode", ["malformed_body", "provider_down"])
-def test_stream_dispatch_failure_escapes_as_a_raw_litellm_error(
+def test_stream_dispatch_failure_is_a_typed_gateway_error_and_logs_no_cost(
     stream_case: Callable[[str], tuple[_w7.LocalSSEServer, Gateway]], mode: str
 ) -> None:
-    """Characterisation pinning RT-040 (sharp edge 10): the raw litellm type escapes.
+    """Characterisation pinning RT-040 fixed: the raw litellm type no longer escapes.
 
-    ``chat_stream`` calls ``completion`` directly (``router.py:641``), so a dispatch
-    failure never passes through ``_call_with_fallback``/``_classify_error``.
+    The two faults surface at DIFFERENT times: ``provider_down`` fails eagerly inside
+    ``completion(stream=True)`` (so the dispatch seam, ``_call_with_fallback``, must
+    classify it), while ``malformed_body`` raises on the first ``next()`` (so
+    ``_iter_stream`` must classify it). Both halves are why this task fixes both.
     """
     server, gw = stream_case(mode)
 
     outcome = _w7.collect_stream(gw)
 
     assert outcome.caught is not None, "the stream fault did not surface at all"
-    assert not isinstance(outcome.caught, GatewayError), "RT-040 would be fixed"
-    assert type(outcome.caught).__module__.startswith("litellm"), (
-        f"expected a raw litellm exception, saw {type(outcome.caught)!r}"
-    )
+    assert isinstance(outcome.caught, GatewayError), outcome.caught
     assert gw._cloud_calls_made == 0, "a failed dispatch must not earn the counter"
     if mode == "provider_down":
         assert _w7.port_is_closed(server.port), "provider_down must have nothing listening"
@@ -330,7 +331,6 @@ def test_stream_dispatch_failure_escapes_as_a_raw_litellm_error(
 
 @pytest.mark.enable_socket
 @pytest.mark.parametrize("mode", ["truncated_stream", "mid_stream_disconnect"])
-@pytest.mark.xfail(strict=True, reason="RT-041")
 def test_stream_without_a_completion_marker_is_not_reported_as_done(
     stream_case: Callable[[str], tuple[_w7.LocalSSEServer, Gateway]], mode: str
 ) -> None:
@@ -350,22 +350,23 @@ def test_stream_without_a_completion_marker_is_not_reported_as_done(
 
 @pytest.mark.enable_socket
 @pytest.mark.parametrize("mode", ["truncated_stream", "mid_stream_disconnect"])
-def test_stream_without_a_completion_marker_is_reported_as_done_today(
+def test_stream_without_a_completion_marker_is_reported_as_truncated(
     stream_case: Callable[[str], tuple[_w7.LocalSSEServer, Gateway]], mode: str
 ) -> None:
-    """Characterisation pinning RT-041/RT-039: today the truncation is invisible.
+    """Characterisation pinning RT-041/RT-039 fixed: truncation is now a typed error.
 
-    The stream ends with the gateway's own ``done`` event and no error, and
-    (RT-039) a ``cost_logs`` row was already written for it.
+    The provider never sent a finish reason, so the gateway must raise the typed
+    connection error naming the provider, leave no ``done`` event and (RT-039)
+    write no ``cost_logs`` row.
     """
     server, gw = stream_case(mode)
 
     outcome = _w7.collect_stream(gw)
 
     assert _w7.request_hits(server) >= 1, "no HTTP request reached the local server"
-    assert outcome.caught is None, f"unexpected escape: {outcome.caught!r}"
-    assert outcome.completed, outcome.events
-    assert "done" in outcome.events
-    rows = _w7.cost_rows(gw._data_path)
-    assert len(rows) == 1, f"expected the RT-039 cost row, saw {rows}"
+    assert isinstance(outcome.caught, GatewayConnectionError), outcome.caught
+    assert STREAM_PROVIDER in str(outcome.caught)
+    assert not outcome.completed
+    assert "done" not in outcome.events
+    assert _w7.cost_rows(gw._data_path) == [], "a truncated stream must not book a cost"
     assert gw._cloud_calls_made == 0, "a loopback provider must not count as cloud"

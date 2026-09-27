@@ -199,7 +199,7 @@ class TestR35RecoverySeamBalanced:
         # Patch _call_with_fallback to short-circuit and skip litellm entirely.
         # This isolates the test from litellm's internal call routing.
         def _fake_fallback(
-            self: Gateway, slot: str, call_fn: Any, call_kwargs: dict[str, Any]
+            self: Gateway, slot: str, call_fn: Any, call_kwargs: dict[str, Any], **_kw: Any
         ) -> Any:
             return _chat_response("ok")
 

@@ -6,8 +6,10 @@ dispatch seam so that it *records the call and then raises*
 ``AssertionError("dispatched <model>")``. A test that then passes proves the
 network was never reached — not merely that a boolean came back correct. The
 record matters because ``Gateway._call_with_fallback`` catches ``Exception`` and
-re-classifies it (``router.py:510-511``), so a bare ``AssertionError`` is
-swallowed into ``UnclassifiedProviderError`` and would otherwise be invisible.
+re-classifies it, so a bare ``AssertionError`` is swallowed into
+``UnclassifiedProviderError`` and would otherwise be invisible: the record is
+what makes the dispatch observable, and the cloud-call counter now counts every
+dispatch attempt too.
 
 Kept as one private module, following the W4 precedent
 (``tests/fuzz/_state_probe.py``), because the plan keeps the redteam tree
@@ -42,6 +44,7 @@ from openreview_cli.gateway.models import Capability, ProviderInfo
 from openreview_cli.gateway.router import Gateway
 from openreview_cli.gateway.tier_config import TierConfig
 from openreview_cli.storage.database import init_database
+from tests.helpers.stream_doubles import StreamChunk, TerminatedStream
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NDA_PDF = REPO_ROOT / "tests/fixtures/nda_with_pii.pdf"
@@ -237,21 +240,6 @@ class CompletionResponse:
         self.choices = [_Choice(content)]
 
 
-class _Delta:
-    def __init__(self, content: str | None) -> None:
-        self.content = content
-
-
-class _StreamChoice:
-    def __init__(self, content: str | None) -> None:
-        self.delta = _Delta(content)
-
-
-class _Chunk:
-    def __init__(self, content: str | None) -> None:
-        self.choices = [_StreamChoice(content)]
-
-
 class EmbeddingResponse:
     """Minimal ``litellm`` embedding double: only ``data[*]['embedding']``."""
 
@@ -313,7 +301,7 @@ class DispatchRecorder:
         self._record(site, kwargs)
         self._maybe_fail(site, kwargs)
         if self.stream_mode:
-            return iter([_Chunk("he"), _Chunk("llo")])
+            return TerminatedStream([StreamChunk("he"), StreamChunk("llo")])
         return CompletionResponse()
 
     def embedding(self, **kwargs: Any) -> Any:

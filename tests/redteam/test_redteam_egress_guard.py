@@ -12,8 +12,10 @@ Technique (plan section 10, W5): the dispatch seam is patched so that it records
 the call and then raises ``AssertionError("dispatched <model>")``. A passing
 test therefore proves the network was *never reached*, not that a boolean came
 back correct — and the record survives ``_call_with_fallback``'s
-``except Exception`` (``router.py:510-511``), which would otherwise swallow the
-assertion into ``UnclassifiedProviderError``.
+``except Exception``, which would otherwise swallow the assertion into
+``UnclassifiedProviderError``. The *record* is what makes the dispatch
+observable; the cloud-call counter now also counts every dispatch attempt, so
+the two agree.
 
 Real command paths driven end to end: ``precheck --document``,
 ``precheck review``, ``privacycheck`` and ``gateway test``.
@@ -288,14 +290,14 @@ def test_unclassifiable_provider_is_blocked_on_the_strict_tier(
     assert gw._cloud_calls_made == 0
 
 
-def test_unclassifiable_provider_dispatch_is_not_counted(
+def test_unclassifiable_provider_dispatch_is_counted(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """RT-027 pinned as observable behaviour: the same state, two resolutions.
+    """RT-027 pinning node, inverted by #143: one state, one resolution.
 
-    ``_enforce_tier`` calls it cloud (``router.py:297-301``) and lets it through
-    on a permissive tier; ``_record_cloud_call`` refuses to count it
-    (``router.py:804-809``) because ``classify_provider`` raised.
+    ``_enforce_tier`` calls the unclassifiable provider cloud and lets it
+    through on a permissive tier; ``_record_cloud_call`` now reaches the same
+    verdict and counts every dispatch attempt as cloud.
     """
     state = _w5.prepare_state(monkeypatch, tmp_path)
     registry = _w5.unclassifiable_registry()
@@ -309,11 +311,10 @@ def test_unclassifiable_provider_dispatch_is_not_counted(
         gw.chat("extraction", [{"role": "user", "content": "hi"}])
 
     assert recorder.models() == ["bedrock/anthropic.claude-3-5-sonnet"] * 3
-    assert gw._cloud_calls_made == 0
-    assert get_total_cloud_calls() == 0
+    assert gw._cloud_calls_made == 3
+    assert get_total_cloud_calls() == 3
 
 
-@pytest.mark.xfail(strict=True, reason="RT-027")
 def test_unclassifiable_provider_dispatch_increments_the_cloud_counter(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -380,15 +381,18 @@ def test_counter_equality_per_dispatch_site(
     ], rows
 
 
-def test_counter_inequality_rows_are_measured(
+def test_counter_equals_dispatch_at_every_site(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The measured counter-equals-dispatch violations, as numbers.
+    """The measured dispatch-vs-increment table, as numbers.
 
     This is the table the register records (RT-026, RT-027, RT-028, RT-029).
-    Every row is a real dispatch count against a real increment count. The
-    RT-026 row is now equal (0 == 0): R-01 fails an unregistered slot primary
-    closed before the seam, so there is no dispatch to under-count.
+    Every row is a real dispatch count against a real increment count. The row
+    set now measures dispatches against increments, not inequalities: the
+    unknown-slot-primary row is 0 == 0 (R-01 fails it closed before the seam, so
+    there is no dispatch to under-count) and the fallback-model row is 3 == 0
+    (the cloud fallback is refused on the maximum tier, so only the three local
+    primary dispatches happen and no cloud egress is recorded).
     """
     state = _w5.prepare_state(monkeypatch, tmp_path)
     registry = {**_w5.cloud_registry(), **_w5.local_registry()}
@@ -403,7 +407,8 @@ def test_counter_inequality_rows_are_measured(
     assert gw.chat("extraction", [{"role": "user", "content": "hi"}]) == "ok"
     rows.append(SiteRow("chat, 2 retries", len(flaky.records), gw._cloud_calls_made))
 
-    # The primary exhausts its retries and the configured fallback model is used.
+    # The primary exhausts its retries and the configured fallback model is
+    # refused by the maximum tier: three local dispatches, no cloud egress.
     fallback_runner = FlakyDispatch(failures=3)
     fallback_runner.install(monkeypatch)
     gw = _w5.make_gateway(
@@ -412,7 +417,8 @@ def test_counter_inequality_rows_are_measured(
         tier="maximum",
         fallback="anthropic/claude-3-5-haiku",
     )
-    assert gw.chat("extraction", [{"role": "user", "content": "hi"}]) == "ok"
+    with pytest.raises(NoMatchingProviderError):
+        gw.chat("extraction", [{"role": "user", "content": "hi"}])
     rows.append(SiteRow("chat, fallback model", len(fallback_runner.records), gw._cloud_calls_made))
 
     # A slot primary the registry cannot resolve: R-01 fails it closed, so the
@@ -437,14 +443,13 @@ def test_counter_inequality_rows_are_measured(
     )
 
     assert rows == [
-        SiteRow("chat, 2 retries", 3, 1),
-        SiteRow("chat, fallback model", 4, 0),
+        SiteRow("chat, 2 retries", 3, 3),
+        SiteRow("chat, fallback model", 3, 0),
         SiteRow("chat, unknown slot primary", 0, 0),
-        SiteRow("chat, unclassifiable provider", 3, 0),
+        SiteRow("chat, unclassifiable provider", 3, 3),
     ], rows
 
 
-@pytest.mark.xfail(strict=True, reason="RT-028")
 def test_retry_dispatches_increment_the_counter_once_each(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -462,10 +467,60 @@ def test_retry_dispatches_increment_the_counter_once_each(
     assert gw._cloud_calls_made == len(flaky.records) == 3
 
 
-def test_fallback_model_is_dispatched_on_the_strict_tier(
+def test_every_dispatch_attempt_is_counted_inside_the_loop(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """RT-029 pinned as observable behaviour: the fallback model is never tier-checked."""
+    """#143: the counter counts dispatches, so a retry batch counts every attempt.
+
+    The count sits before the ``try`` in ``_call_with_fallback``, so the two
+    attempts that raised are counted exactly like the one that succeeded.
+    """
+    state = _w5.prepare_state(monkeypatch, tmp_path)
+    registry = _w5.cloud_registry()
+    monkeypatch.setattr("openreview_cli.gateway.router.load_registry", lambda: registry)
+    mark_pii_available()
+    flaky = FlakyDispatch(failures=2)
+    flaky.install(monkeypatch)
+    gw = _w5.make_gateway(state, primary=_w5.CLOUD_PRIMARY, tier="performance")
+
+    assert gw.chat("extraction", [{"role": "user", "content": "hi"}]) == "ok"
+
+    assert gw._cloud_calls_made == len(flaky.records) == 3
+    assert get_total_cloud_calls() == 3
+
+
+def test_an_unregistered_slot_primary_is_counted_as_cloud_on_a_permissive_tier(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#143/finding 6: an unregistered slot primary is counted as cloud per dispatch.
+
+    Pre-T1 the post-dispatch counter read the slot primary, found nothing in the
+    registry and counted 0 for the three dispatches that really happened.
+    """
+    state = _w5.prepare_state(monkeypatch, tmp_path)
+    monkeypatch.setattr("openreview_cli.gateway.router.load_registry", dict)
+    gw = _w5.make_gateway(state, primary="mystery/model", tier="performance")
+    mark_pii_available()
+    recorder = _w5.DispatchRecorder(fail=True)
+    recorder.install(monkeypatch)
+
+    with contextlib.suppress(UnclassifiedProviderError):
+        gw.chat("extraction", [{"role": "user", "content": "hi"}])
+
+    assert len(recorder.records) == 3
+    assert gw._cloud_calls_made == 3
+    assert get_total_cloud_calls() == 3
+
+
+def test_a_cloud_fallback_model_is_blocked_on_the_strict_tier(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """RT-029, inverted: the fallback model passes the same tier gate as the primary.
+
+    Formerly ``test_fallback_model_is_dispatched_on_the_strict_tier``, it pinned
+    the bug as observable behaviour. Now the maximum tier refuses the cloud
+    fallback, so only the three local primary attempts dispatch.
+    """
     state = _w5.prepare_state(monkeypatch, tmp_path)
     registry = {**_w5.cloud_registry(), **_w5.local_registry()}
     monkeypatch.setattr("openreview_cli.gateway.router.load_registry", lambda: registry)
@@ -478,19 +533,14 @@ def test_fallback_model_is_dispatched_on_the_strict_tier(
         fallback="anthropic/claude-3-5-haiku",
     )
 
-    assert gw.chat("extraction", [{"role": "user", "content": "hi"}]) == "ok"
+    with pytest.raises(NoMatchingProviderError):
+        gw.chat("extraction", [{"role": "user", "content": "hi"}])
 
-    assert runner.models() == [
-        "ollama/qwen3:8b",
-        "ollama/qwen3:8b",
-        "ollama/qwen3:8b",
-        "anthropic/claude-3-5-haiku",
-    ], runner.summary()
+    assert runner.models() == ["ollama/qwen3:8b"] * 3, runner.summary()
     assert runner.records[-1].api_base == _w5.OLLAMA_BASE_URL
     assert gw._cloud_calls_made == 0
 
 
-@pytest.mark.xfail(strict=True, reason="RT-029")
 def test_a_cloud_fallback_model_never_reaches_dispatch_on_the_strict_tier(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

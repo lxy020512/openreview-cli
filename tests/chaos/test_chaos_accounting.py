@@ -8,9 +8,9 @@ Two invariants from the plan's Track D (section 5), asserted rather than assumed
    must cross-check against the egress counter. (RT-028 already covers the
    dispatch-vs-logical-call *counter* asymmetry — the retry-path case below is
    cross-referenced to it, not re-opened.)
-2. **Retry shape.** Sharp edge 9: ``_call_with_fallback`` retries every
-   ``Exception`` three times with a fixed delay, including the permanent auth and
-   not-found classes it should not retry.
+2. **Retry shape.** Sharp edge 9 fixed: ``_call_with_fallback`` retries a
+   transient ``Exception`` three times with a fixed delay, but a permanent auth
+   or not-found class is dispatched once and re-raised (#154).
 
 Plus the recovery layer: ``RecoveryCoordinator.handle_gateway_failure`` routing,
 the ``provider_fallback`` privacy-tier guard and the ``user_guided_recovery``
@@ -61,28 +61,33 @@ PERMANENT_FAULTS: dict[str, type[Exception]] = {"auth": AuthError, "not_found": 
 EXPECTED_RETRY_ATTEMPTS = 3  # config retries: 2 -> 3 dispatches
 
 
-def assert_no_earned_cost(rows: list[tuple[str, str, int]], gw: Any, process_calls: int) -> None:
-    """The accounting oracle: no cost row, no instance counter, no process counter."""
+def assert_no_earned_cost(
+    rows: list[tuple[str, str, int]], gw: Any, process_calls: int, attempts: int
+) -> None:
+    """The accounting oracle: no cost row, and only the dispatch attempts counted."""
     assert rows == [], f"a faulted call logged a cost: {rows}"
-    assert gw._cloud_calls_made == 0, "a faulted call incremented the instance counter"
-    assert process_calls == 0, "a faulted call incremented the process counter"
+    assert gw._cloud_calls_made == attempts, "the counter must count every dispatch attempt"
+    assert process_calls == attempts, "the process counter must count every dispatch attempt"
 
 
 # ── Cost-accounting integrity ───────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("fault_name", NO_COST_FAULTS)
-def test_faulted_call_logs_no_cost_and_earns_no_counter(
+def test_faulted_call_logs_no_cost_and_earns_only_the_attempts_it_made(
     flaky_gateway: FlakyGatewayFactory, fault_name: str
 ) -> None:
-    """A failed dispatch must leave the ledger untouched."""
+    """A failed dispatch must leave no cost row, while the counter counts each attempt."""
     flaky = flaky_gateway(fault_name)
 
     with pytest.raises(GatewayError):
         flaky.chat()
 
-    assert flaky.seam.attempts == EXPECTED_RETRY_ATTEMPTS, "the retry loop did not run"
-    assert_no_earned_cost(_w7.cost_rows(flaky.state.db_path), flaky.gw, get_total_cloud_calls())
+    expected_attempts = 1 if fault_name in PERMANENT_FAULTS else EXPECTED_RETRY_ATTEMPTS
+    assert flaky.seam.attempts == expected_attempts, "unexpected number of dispatch attempts"
+    assert_no_earned_cost(
+        _w7.cost_rows(flaky.state.db_path), flaky.gw, get_total_cloud_calls(), flaky.seam.attempts
+    )
 
 
 def test_successful_call_logs_exactly_one_row_and_counts_one(
@@ -110,12 +115,11 @@ def test_successful_call_logs_exactly_one_row_and_counts_one(
 def test_retry_then_success_logs_one_row_for_three_dispatches(
     flaky_gateway: FlakyGatewayFactory,
 ) -> None:
-    """Two failures then a success: 3 dispatches, 1 counter, 1 row.
+    """Two failures then a success: 3 dispatch attempts, 3 counter increments, 1 row.
 
-    This is the cost-side companion of W5's RT-028 (the counter counts logical
-    calls, not dispatches). The *counter* asymmetry is RT-028 and is not re-opened
-    here; what W7c adds is that the ledger agrees with the counter, so a retry
-    storm cannot inflate ``cost_logs`` either.
+    The ledger still agrees with the *logical* call (one row), while the egress
+    counter now counts dispatches (#143): the counter no longer equals the row
+    count, because one logical call made three network attempts.
     """
     flaky = flaky_gateway("timeout")
     flaky.install_seam(
@@ -129,26 +133,27 @@ def test_retry_then_success_logs_one_row_for_three_dispatches(
     assert flaky.seam.attempts == 3, "expected two failures then a success"
     rows = _w7.cost_rows(flaky.state.db_path)
     assert rows == [(CLOUD_PRIMARY, "openai", 5)], rows
-    assert flaky.gw._cloud_calls_made == 1, "one logical call earned exactly one increment"
-    assert get_total_cloud_calls() == 1
+    assert flaky.gw._cloud_calls_made == 3, "every dispatch attempt earned one increment"
+    assert get_total_cloud_calls() == 3
 
 
-def test_no_choice_reply_leaves_a_cost_row_while_the_call_fails(
+def test_no_choice_reply_leaves_no_cost_row_and_counts_the_dispatch(
     flaky_gateway: FlakyGatewayFactory,
 ) -> None:
-    """RT-039, the accounting half of W7a's RT-038 node.
+    """RT-039 fixed, the accounting half of W7a's RT-038 node.
 
-    The W0 ``delay`` record delivers no response object; the call fails, yet a
-    ``cost_logs`` row is written first. Evidence: ``draft/evidence/RT-039.txt``.
+    The W0 ``delay`` record delivers no response object; the reply is validated
+    before the cost row, so the call raises a typed ``UnclassifiedProviderError``
+    naming the provider and leaves no ``cost_logs`` row. The dispatch is still
+    counted (#147/C2). ``draft/evidence/RT-039.txt`` is superseded.
     """
     flaky = flaky_gateway("delay")
 
-    with pytest.raises(AttributeError):
+    with pytest.raises(UnclassifiedProviderError):
         flaky.chat()
 
-    rows = _w7.cost_rows(flaky.state.db_path)
-    assert len(rows) == 1, f"expected the dishonest row, saw {rows}"
-    assert rows[0] == (CLOUD_PRIMARY, "openai", 0)
+    assert _w7.cost_rows(flaky.state.db_path) == []
+    assert flaky.gw._cloud_calls_made == 1
 
 
 # ── Retry shape (sharp edge 9 / RT-043) ─────────────────────────────────────
@@ -157,7 +162,7 @@ def test_no_choice_reply_leaves_a_cost_row_while_the_call_fails(
 def test_retry_shape_is_three_attempts_for_every_fault_class(
     flaky_gateway: FlakyGatewayFactory,
 ) -> None:
-    """Sharp edge 9: every exception class — permanent ones included — is retried."""
+    """Sharp edge 9 fixed: a transient class retries three times; a permanent one once."""
     recorded: dict[str, int] = {}
     for fault_name in NO_COST_FAULTS:
         flaky = flaky_gateway(fault_name)
@@ -165,35 +170,25 @@ def test_retry_shape_is_three_attempts_for_every_fault_class(
             flaky.chat()
         recorded[fault_name] = flaky.seam.attempts
 
-    assert recorded == dict.fromkeys(NO_COST_FAULTS, EXPECTED_RETRY_ATTEMPTS), recorded
+    expected = {
+        fault_name: 1 if fault_name in PERMANENT_FAULTS else EXPECTED_RETRY_ATTEMPTS
+        for fault_name in NO_COST_FAULTS
+    }
+    assert recorded == expected, recorded
 
 
 @pytest.mark.parametrize("fault_name", sorted(PERMANENT_FAULTS))
-@pytest.mark.xfail(strict=True, reason="RT-043")
-def test_permanent_errors_are_not_retried(
+def test_permanent_errors_are_dispatched_once(
     flaky_gateway: FlakyGatewayFactory, fault_name: str
 ) -> None:
-    """Expected: an auth or not-found failure is attempted exactly once."""
-    flaky = flaky_gateway(fault_name)
-
-    with pytest.raises(PERMANENT_FAULTS[fault_name]):
-        flaky.chat()
-
-    assert flaky.seam.attempts == 1, f"a permanent error was retried {flaky.seam.attempts} times"
-
-
-@pytest.mark.parametrize("fault_name", sorted(PERMANENT_FAULTS))
-def test_permanent_errors_are_retried_today(
-    flaky_gateway: FlakyGatewayFactory, fault_name: str
-) -> None:
-    """Characterisation pinning RT-043: the permanent class is classified, then retried."""
+    """Inverted RT-043 pin (#154): the permanent class is classified and short-circuited."""
     flaky = flaky_gateway(fault_name)
 
     with pytest.raises(PERMANENT_FAULTS[fault_name]) as exc_info:
         flaky.chat()
 
     assert isinstance(exc_info.value, GatewayError), "the class IS detected"
-    assert flaky.seam.attempts == EXPECTED_RETRY_ATTEMPTS, flaky.seam.attempts
+    assert flaky.seam.attempts == 1, flaky.seam.attempts
 
 
 def test_retry_delay_is_fixed_with_no_jitter_or_cap(
@@ -366,34 +361,46 @@ async def test_user_guided_recovery_offers_at_least_two_suggestions() -> None:
 # ── Sharp edge 10 and 11: the two dispatch sites without a retry loop ───────
 
 
-def test_chat_stream_disables_retries_and_never_tries_the_fallback(
+def test_chat_stream_retries_then_tries_the_fallback(
     flaky_gateway: FlakyGatewayFactory,
 ) -> None:
-    """Sharp edge 10: ``chat_stream`` calls ``completion`` directly (``router.py:641``).
+    """Sharp edge 10 fixed: ``chat_stream`` dispatches through the retry/fallback seam.
 
-    ``num_retries=0`` (``router.py:633``) and no fallback model dispatch, so a
-    configured slot fallback is never tried. The failure escapes unclassified
-    because it never passes through ``_call_with_fallback``/``_classify_error``.
+    The stream dispatch is routed through ``_call_with_fallback``, so a configured
+    slot fallback IS tried after the primary's retries: three primary dispatches, then
+    one fallback dispatch, and the failure is classified. Both prefixes in that
+    registry are cloud — the absent ``anthropic`` entry takes the fail-closed
+    unknown-prefix count — so every dispatch earned one counter increment, while a
+    stream that never produced a usable reply leaves no ``cost_logs`` row.
+
+    Only the DISPATCH is retried; nothing has been yielded yet (FR-6/#151).
     """
     flaky = flaky_gateway("provider_down", slot_fallback="anthropic/claude-3-5-haiku")
 
     outcome = _w7.collect_stream(flaky.gw)
 
     assert outcome.caught is not None, "the fault did not surface"
-    assert type(outcome.caught).__name__ == "ConnectionError", type(outcome.caught)
-    assert not isinstance(outcome.caught, GatewayError), "the escaping error is unclassified"
-    assert flaky.seam.attempts == 1, (
-        f"chat_stream dispatched {flaky.seam.attempts} times: retries/fallback are live"
+    assert isinstance(outcome.caught, GatewayError), outcome.caught
+    assert flaky.seam.attempts == 4, (
+        f"expected 3 primary retries + 1 fallback, saw {flaky.seam.attempts}"
     )
-    assert flaky.seam.models == [CLOUD_PRIMARY], flaky.seam.models
+    assert flaky.seam.models == [CLOUD_PRIMARY] * 3 + ["anthropic/claude-3-5-haiku"], (
+        flaky.seam.models
+    )
     assert _w7.cost_rows(flaky.state.db_path) == [], "a failed stream logged a cost"
-    assert flaky.gw._cloud_calls_made == 0
+    assert flaky.gw._cloud_calls_made == 4
 
 
-def test_rerank_has_no_retry_loop(
+def test_rerank_uses_the_configured_retry_loop(
     flaky_gateway: FlakyGatewayFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Sharp edge 11: ``rerank`` does its own try/except with no retry loop."""
+    """Sharp edge 11 is fixed: ``rerank`` runs the configured retry loop.
+
+    ``reranking`` is in ``PRIMARY_ONLY_SLOTS``, so the fallback branch stays
+    unreachable (the slot has no fallback and is primary-only either way), while
+    ``gateway.fallback.retries`` now applies to the dispatch exactly as it does
+    to ``chat``/``embed``.
+    """
     calls: list[dict[str, Any]] = []
 
     def _boom(**kwargs: Any) -> Any:
@@ -406,10 +413,10 @@ def test_rerank_has_no_retry_loop(
     with pytest.raises(UnclassifiedProviderError) as exc_info:
         flaky.gw.rerank("reranking", "query", ["a", "b"])
 
-    assert len(calls) == 1, f"rerank was dispatched {len(calls)} times"
+    assert len(calls) == 3, f"rerank was dispatched {len(calls)} times"
     assert "openai" in str(exc_info.value), "the error must name the provider"
     assert _w7.cost_rows(flaky.state.db_path) == [], "a failed rerank logged a cost"
-    assert flaky.gw._cloud_calls_made == 0
+    assert flaky.gw._cloud_calls_made == 3
 
 
 # ── Negative control (anti-vacuity, plan section 9.3) ───────────────────────
@@ -424,4 +431,9 @@ def test_negative_control_accounting_oracle_rejects_a_real_cost_row(
     assert flaky.chat() == "ok"
 
     with pytest.raises(AssertionError, match="logged a cost"):
-        assert_no_earned_cost(_w7.cost_rows(flaky.state.db_path), flaky.gw, get_total_cloud_calls())
+        assert_no_earned_cost(
+            _w7.cost_rows(flaky.state.db_path),
+            flaky.gw,
+            get_total_cloud_calls(),
+            flaky.seam.attempts,
+        )

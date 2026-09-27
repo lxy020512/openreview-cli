@@ -42,7 +42,7 @@ from openreview_cli.gateway.models import (
     record_cloud_call,
     reset_total_cloud_calls,
 )
-from openreview_cli.gateway.redaction import install_on_root_handlers, redact_key
+from openreview_cli.gateway.redaction import install_on_root_handlers, redact_key, redact_text
 from openreview_cli.gateway.registry import load_registry
 from openreview_cli.gateway.tier_config import TierConfig
 from openreview_cli.slots import PRIMARY_ONLY_SLOTS, VALID_SLOTS
@@ -463,6 +463,7 @@ class Gateway:
 
     def _classify_error(self, exc: Exception, provider: str | None = None) -> Exception:
         msg = str(exc).lower()
+        detail = redact_text(str(exc))
         exc_type = type(exc).__name__.lower()
         status = getattr(exc, "status_code", None)
 
@@ -506,40 +507,60 @@ class Gateway:
             or error_type == "authentication"
             or any(i in msg for i in auth_indicators)
         ):
-            return AuthError(provider or "unknown", str(exc))
+            return AuthError(provider or "unknown", detail)
         if status == 429 or error_type == "rate_limit" or any(i in msg for i in rate_indicators):
-            return RateLimitError(provider or "unknown", str(exc))
+            return RateLimitError(provider or "unknown", detail)
         if status == 404 or any(i in msg for i in model_indicators):
-            return ModelNotFoundError(provider or "unknown", str(exc))
+            return ModelNotFoundError(provider or "unknown", detail)
         if any(i in exc_type for i in conn_indicators) or any(
             i in msg for i in ("connection refused", "connection reset", "connecterror")
         ):
-            return ConnectionError(provider or "unknown", str(exc))
+            return ConnectionError(provider or "unknown", detail)
         # R3-4: catch-all is UnclassifiedProviderError (recoverable, transient),
         # NOT AllProvidersFailedError (which exclusively signals gateway-local
         # exhaustion and remains terminal at the recovery layer).
-        return UnclassifiedProviderError(_prefix(str(exc)))
+        return UnclassifiedProviderError(_prefix(detail))
 
     def _call_with_fallback(
         self,
         slot: str,
         call_fn: Any,
         call_kwargs: dict[str, Any],
+        *,
+        call_type: str = "llm",  # "llm" | "embedding" | "reranking"
+        provider_prefix: str | None = None,  # the prefix of the model actually dispatched
     ) -> Any:
         cfg = self._get_slot_config(slot)
-        provider = cfg["primary"].split("/")[0]
+        provider = provider_prefix or cfg["primary"].split("/", 1)[0]
         fallback_cfg = self._config.get("gateway", {}).get("fallback", {})
         retries: int = fallback_cfg.get("retries", 2)
         retry_delay: float = fallback_cfg.get("retry_delay", 1.0)
         timeout: int = fallback_cfg.get("timeout", 60)
-        call_kwargs["timeout"] = timeout
+        # FR-6: chat_stream sets the dual httpx.Timeout (15s connect / 45s idle)
+        # BEFORE dispatch; overwriting it with an int would destroy the idle-timeout
+        # contract and break test_stream_timeout_is_dual_not_single. Only a stream
+        # keeps its own timeout; every non-stream caller (chat/embed/rerank) takes
+        # the configured one exactly as before — a caller-supplied `timeout=` must
+        # not widen it. (Expressed as one expression to stay inside PLR0912.)
+        call_kwargs["timeout"] = (
+            call_kwargs.get("timeout", timeout) if "stream" in call_kwargs else timeout
+        )
 
         last_error: Exception | None = None
         for attempt in range(retries + 1):
+            # C1/#147: the counter counts DISPATCHES, not logical calls. The count
+            # sits before the try, so an attempt that raised is still counted; the
+            # value is therefore an upper bound on egress, never an under-report.
+            self._record_cloud_call(slot, provider_prefix=provider)
             try:
                 return call_fn(**call_kwargs)
             except Exception as e:
                 last_error = e
+                # C6/#154: a retry cannot fix a bad credential or a missing model.
+                # _classify_error already produces AuthError for 401/403/auth and
+                # ModelNotFoundError for 404/not-found, so there is no second table.
+                if isinstance(self._classify_error(e, provider), (AuthError, ModelNotFoundError)):
+                    break
                 if attempt < retries:
                     time.sleep(retry_delay)
 
@@ -550,11 +571,31 @@ class Gateway:
                 raise classified from last_error
             raise AllProvidersFailedError("All providers failed")
 
+        fallback_prefix = fallback.split("/", 1)[0]
+        # Same gate as the primary, against the ACTUAL model (router.py:240-244).
+        self._enforce_tier(slot, call_type, provider_prefix=fallback_prefix)
+        # Undo the primary's provider block, then apply the fallback's. Dropping the
+        # primary's keys is load-bearing for a `source == "custom"` primary: litellm
+        # honours an explicit `api_key` over the provider env var, so leaving it in
+        # would send the PRIMARY's credential to the fallback provider's host (#144).
+        primary = self._resolve_provider_info(slot)
+        if primary is not None:
+            for field in primary.credentials:
+                call_kwargs.pop(field.litellm_param, None)
+        call_kwargs.pop("api_base", None)
+        call_kwargs.pop("api_key", None)
+        info = load_registry().get(fallback_prefix)
+        if info is not None and info.base_url:
+            call_kwargs["api_base"] = info.base_url
+        if info is not None and info.credentials:
+            self._apply_provider_credentials(info, call_kwargs)
         call_kwargs["model"] = fallback
+        self._record_cloud_call(slot, provider_prefix=fallback_prefix)
         try:
             return call_fn(**call_kwargs)
         except Exception as e:
-            classified = self._classify_error(e, provider)
+            # The error names the provider the failing request actually went to.
+            classified = self._classify_error(e, fallback_prefix)
             raise classified from e
 
     def _strip_empty_content_parts(
@@ -624,10 +665,21 @@ class Gateway:
         call_kwargs = self._get_litellm_kwargs(slot)
         call_kwargs["messages"] = messages
         call_kwargs.update(kwargs)
-        response = self._call_with_fallback(slot, completion, call_kwargs)
-        # R3-5: cloud-call counter must reflect the actual dispatched
-        # provider, not the slot primary.
-        self._record_cloud_call(slot, provider_prefix=override_prefix)
+        response = self._call_with_fallback(
+            slot, completion, call_kwargs, provider_prefix=override_prefix
+        )
+        # #149/#150: validate the reply BEFORE the cost row, so a reply the caller can
+        # never read leaves no ledger entry. Reuses UnclassifiedProviderError (the
+        # existing _classify_error catch-all) instead of adding a class; the message
+        # carries the provider name, mirroring _classify_error's "[provider] detail".
+        reply_provider = override_prefix or provider_prefix
+        choices = getattr(response, "choices", None)
+        if not choices:
+            raise UnclassifiedProviderError(f"[{reply_provider}] reply carried no usable choice")
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            raise UnclassifiedProviderError(f"[{reply_provider}] reply choice carried no message")
+        content = getattr(message, "content", None) or ""
         # Cost logging must never block the AI call (T030): a logging failure
         # (e.g. missing session FK for non-review flows like grounding) is
         # non-fatal — warn and return the model response regardless.
@@ -637,7 +689,7 @@ class Gateway:
             )
         except Exception as cost_err:
             logger.warning("Cost logging failed (non-fatal): %s", cost_err)
-        return response.choices[0].message.content or ""
+        return content
 
     def chat_stream(
         self,
@@ -661,7 +713,8 @@ class Gateway:
         call_kwargs = self._get_litellm_kwargs(slot)
         call_kwargs["messages"] = cleaned_messages
         call_kwargs["stream"] = True
-        call_kwargs["num_retries"] = 0  # streaming fallback out of scope; one shot
+        # litellm must not retry underneath; the gateway owns the retry layer
+        call_kwargs["num_retries"] = 0
         call_kwargs["timeout"] = httpx.Timeout(
             connect=STREAM_CONNECT_TIMEOUT,
             read=STREAM_READ_TIMEOUT,
@@ -669,20 +722,23 @@ class Gateway:
             write=STREAM_CONNECT_TIMEOUT,
         )
         call_kwargs.update(kwargs)
-        response = completion(**call_kwargs)
-        # R3-5: same dispatch-aware counter as chat().
-        self._record_cloud_call(slot, provider_prefix=override_prefix)
-        # ponytail: streaming `response` is a generator, so log_call sees no
-        # `.usage` yet → cost recorded as 0. Capturing real cost needs the
-        # final chunk; defer until a non-streaming cost path or stream-drain.
-        # Cost logging must never kill the stream (mirrors chat() T030 fix).
+        response = self._call_with_fallback(
+            slot, completion, call_kwargs, provider_prefix=override_prefix
+        )
+        # Mirror chat's reply_provider: a `model=` override names the provider that
+        # actually streamed, so a stream error is attributed to it.
+        yield from self._iter_stream(response, override_prefix or provider_prefix)
+        # #150: the row is written only after the terminal marker was seen, so a
+        # truncated or never-yielding stream leaves none. Streaming rows are still
+        # 0-cost (log_call reads .usage, absent on the dash wrapper) — noted for a
+        # follow-up issue, out of scope here.
         try:
             self._cost_tracker.log_call(
                 session_id, slot, call_kwargs["model"], provider_prefix, response
             )
         except Exception as cost_err:
             logger.warning("Cost logging failed (non-fatal): %s", cost_err)
-        yield from self._iter_stream(response, provider_prefix)
+        yield StreamingOutputEvent(type="done")
 
     def _iter_stream(self, response: Any, provider_prefix: str) -> Iterator[StreamingOutputEvent]:
         try:
@@ -690,15 +746,18 @@ class Gateway:
                 delta = getattr(chunk.choices[0].delta, "content", None) if chunk.choices else None
                 if delta:
                     yield StreamingOutputEvent(type="chunk", text=delta)
-            yield StreamingOutputEvent(type="done")
         except Exception as exc:
             if isinstance(exc, httpx.ConnectTimeout):
                 raise ConnectionError(
-                    provider_prefix, f"stream header timeout: {exc}", timeout_kind="header"
+                    provider_prefix,
+                    f"stream header timeout: {redact_text(str(exc))}",
+                    timeout_kind="header",
                 ) from exc
             if isinstance(exc, httpx.ReadTimeout):
                 raise ConnectionError(
-                    provider_prefix, f"stream idle timeout: {exc}", timeout_kind="idle"
+                    provider_prefix,
+                    f"stream idle timeout: {redact_text(str(exc))}",
+                    timeout_kind="idle",
                 ) from exc
             msg = str(exc).lower()
             if (
@@ -712,9 +771,23 @@ class Gateway:
             ):
                 kind = "header" if ("connect" in msg or "header" in msg) else "idle"
                 raise ConnectionError(
-                    provider_prefix, f"stream idle timeout: {exc}", timeout_kind=kind
+                    provider_prefix,
+                    f"stream idle timeout: {redact_text(str(exc))}",
+                    timeout_kind=kind,
                 ) from exc
-            raise
+            raise self._classify_error(exc, provider_prefix) from exc
+        # The terminal marker is the RESPONSE-level attribute: litellm's
+        # CustomStreamWrapper fabricates a chunk ``finish_reason="stop"`` on EOF,
+        # so a chunk's finish_reason cannot be trusted (measured against
+        # tests/chaos/_w7_probe.LocalSSEServer: a truncated stream's last chunk
+        # carries 'stop' while ``received_finish_reason`` stays None).
+        # ``intermittent_finish_reason`` never differs from it in any measured
+        # mode, so only this one attribute is read.
+        if not getattr(response, "received_finish_reason", None):
+            raise ConnectionError(
+                provider_prefix,
+                "stream ended without a terminal finish_reason (truncated or interrupted)",
+            )
 
     def embed(
         self,
@@ -742,8 +815,7 @@ class Gateway:
             texts = [resolved, *texts]
         call_kwargs = self._get_litellm_kwargs(slot)
         call_kwargs["input"] = texts
-        response = self._call_with_fallback(slot, embedding, call_kwargs)
-        self._record_cloud_call(slot)
+        response = self._call_with_fallback(slot, embedding, call_kwargs, call_type="embedding")
         orig_provider = self._get_slot_config(slot)["primary"].split("/")[0]
         try:
             self._cost_tracker.log_call(
@@ -783,29 +855,19 @@ class Gateway:
         from litellm import rerank
 
         cfg = self._get_slot_config(slot)
-        fallback_cfg = self._config.get("gateway", {}).get("fallback", {})
-        timeout: int = fallback_cfg.get("timeout", 60)
-
-        kwargs = self._get_litellm_kwargs(slot)
-        try:
-            response = rerank(
-                query=query,
-                documents=documents,
-                top_n=top_n,
-                timeout=timeout,
-                **kwargs,
-            )
-        except Exception as e:
-            classified = self._classify_error(e, provider=cfg["primary"].split("/")[0])
-            raise classified from e
-
+        call_kwargs: dict[str, Any] = {
+            "query": query,
+            "documents": documents,
+            "top_n": top_n,
+            **self._get_litellm_kwargs(slot),
+        }
+        response = self._call_with_fallback(slot, rerank, call_kwargs, call_type="reranking")
         try:
             self._cost_tracker.log_call(
-                session_id, slot, cfg["primary"], cfg["primary"].split("/")[0], response
+                session_id, slot, cfg["primary"], cfg["primary"].split("/", 1)[0], response
             )
         except Exception as cost_err:
             logger.warning("Cost logging failed (non-fatal): %s", cost_err)
-        self._record_cloud_call(slot)
         return [
             {"index": r["index"], "relevance_score": r["relevance_score"]} for r in response.results
         ]
@@ -817,6 +879,12 @@ class Gateway:
         ``model=`` override), classify the override instead of the slot
         primary. Otherwise the counter under-reports cloud egress and the
         privacy footer misrepresents actual network activity.
+
+        #143: an unclassifiable provider resolves as cloud here exactly as
+        ``_enforce_tier`` resolves it — one state, one resolution — for every
+        dispatch that names its ``provider_prefix``. A slot primary the registry
+        cannot resolve (the no-prefix branch below) still returns uncounted:
+        ``_enforce_tier``, not this counter, is the fail-closed gate.
         """
         if provider_prefix is not None:
             registry = load_registry()
@@ -835,9 +903,9 @@ class Gateway:
         try:
             klass = classify_provider(info)
         except ValueError:
-            # Local model with resolution error — surface naturally, do NOT
-            # count as cloud, do NOT coerce to cloud.
-            return
+            # One state, one resolution (#143): _enforce_tier treats an
+            # unclassifiable provider as cloud, so the counter must too.
+            klass = "cloud"
         if klass == "cloud":
             self._cloud_calls_made += 1
             record_cloud_call()

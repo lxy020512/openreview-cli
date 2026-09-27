@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 
 
 def redact_key(key: str, visible: int = 4) -> str:
@@ -27,19 +28,28 @@ REDACT_PATTERNS: list[str] = [
 _KEY_VALUE_RE = re.compile(r"\b(?:sk|pk|rk)-[A-Za-z0-9_\-]{12,}")
 
 
+def redact_text(text: str, patterns: Iterable[str] | None = None) -> str:
+    """Redact credential-shaped material from any text bound for a user surface.
+
+    The value pass runs first: a literal "sk-" pass would otherwise mask the
+    prefix and leave the key body in place. `patterns` defaults to
+    REDACT_PATTERNS; RedactingFilter passes its own list so a per-instance filter
+    keeps its own patterns (tests/unit/test_gateway_redaction.py::TestRedactingFilter).
+    """
+    text = _KEY_VALUE_RE.sub(lambda m: redact_key(m.group(0)), text)
+    for pat in patterns if patterns is not None else REDACT_PATTERNS:
+        if pat and isinstance(pat, str) and pat in text:
+            text = text.replace(pat, redact_key(pat))
+    return text
+
+
 class RedactingFilter(logging.Filter):
     def __init__(self, patterns: list[str] | None = None) -> None:
         super().__init__()
         self._patterns = patterns or []
 
     def _redact(self, text: str) -> str:
-        # Value pass FIRST: the literal "sk-" pattern below would otherwise mask
-        # the prefix and leave the whole key body in place.
-        text = _KEY_VALUE_RE.sub(lambda m: redact_key(m.group(0)), text)
-        for pat in self._patterns:
-            if pat and isinstance(pat, str) and pat in text:
-                text = text.replace(pat, redact_key(pat))
-        return text
+        return redact_text(text, self._patterns)
 
     def filter(self, record: logging.LogRecord) -> bool:
         record.msg = self._redact(record.getMessage())
