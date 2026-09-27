@@ -5,13 +5,14 @@ corruption-prone (commit ``1a02d26`` kept the playbook corruption scan off the T
 render path). Two loaders are covered:
 
 * ``review/playbook.py:load_playbook`` parses a YAML file and emits
-  ``PlaybookLoadError`` for bad input. It guards a YAML parse error and a
-  non-mapping top level, but ``_parse_category`` (``playbook.py:123``) calls
-  ``dict(raw)`` on each category without checking it is a mapping, so a
-  ``categories: [1, 2]`` playbook raises a raw ``TypeError``.
+  ``PlaybookLoadError`` for bad input: it guards a YAML parse error, a non-mapping
+  top level, and -- via ``_parse_category``'s ``isinstance(raw, dict)`` check -- a
+  non-mapping category. A ``categories: [1, 2]`` playbook is therefore rejected
+  with ``PlaybookLoadError`` rather than a raw ``TypeError``.
 * ``tui/domain/playbooks.py:corrupt_playbook_ids_via_tui`` is the corruption scan;
-  it catches only ``(PlaybookLoadError, ValueError)`` (``:70``), so the same raw
-  ``TypeError`` escapes the scanner that exists to classify corrupt playbooks.
+  it catches ``(PlaybookLoadError, ValueError)`` (``:70``), so a scalar-category
+  playbook is classified as corrupt instead of crashing the scanner that exists to
+  classify corrupt playbooks.
 
 ``PromptStore`` (``prompts/store.py``) is covered with a real round trip on a
 migrated and on a freshly initialised database.
@@ -79,11 +80,6 @@ def test_load_playbook_corrupt_yaml_is_a_playbook_error(tmp_path: Path) -> None:
     _assert_load_rejected(outcome)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-024: a playbook whose categories are scalars makes _parse_category "
-    "(review/playbook.py:123, dict(raw)) raise a raw TypeError instead of PlaybookLoadError",
-)
 def test_load_playbook_wrong_typed_categories_is_a_playbook_error(tmp_path: Path) -> None:
     path = corpus_state.wrong_typed_playbook_yaml(tmp_path)
     with _state_probe.count_calls(playbook_module, "_parse_category") as hits:
@@ -95,12 +91,6 @@ def test_load_playbook_wrong_typed_categories_is_a_playbook_error(tmp_path: Path
 # ── the corruption scan must classify, not crash ───────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-024: corrupt_playbook_ids_via_tui (tui/domain/playbooks.py:70) catches only "
-    "PlaybookLoadError/ValueError, so a scalar-category playbook raises a raw TypeError out of "
-    "the scan instead of being classified corrupt",
-)
 def test_corrupt_playbook_scan_classifies_a_scalar_categories_playbook(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
