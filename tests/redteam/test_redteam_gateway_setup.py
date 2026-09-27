@@ -146,10 +146,10 @@ def test_negative_control_leak_oracle_rejects_a_planted_key(
 # ── gateway setup ───────────────────────────────────────────────────────────
 
 
-def test_gateway_setup_on_a_corrupt_auth_json_escapes_with_no_message(
+def test_gateway_setup_on_a_corrupt_auth_json_names_the_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """RT-033 pinned as observable behaviour: the CLI never catches the raise."""
+    """Inverts the pre-fix RT-033 pin (exit 1, empty output): the config error names the file."""
     state = _w5.prepare_state(monkeypatch, tmp_path)
     state.auth_path.write_text("{not json", encoding="utf-8")
     state.auth_path.chmod(0o600)
@@ -157,15 +157,10 @@ def test_gateway_setup_on_a_corrupt_auth_json_escapes_with_no_message(
 
     result = _w5.run_cli(["gateway", "setup"])
 
-    from openreview_cli.config.auth import AuthCorruptError
-
-    assert isinstance(result.exception, AuthCorruptError), result.exception
-    assert result.exit_code == 1
-    assert result.output == "", f"the user is told nothing about the corruption: {result.output!r}"
-    assert "corrupt" in str(result.exception)
+    assert_clean_failure(result, frozenset({EXIT_CONFIG}), "corrupt")
+    assert "auth.json" in result.output
 
 
-@pytest.mark.xfail(strict=True, reason="RT-033")
 def test_gateway_setup_on_a_corrupt_auth_json_is_a_clean_config_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

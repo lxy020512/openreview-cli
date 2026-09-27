@@ -1,18 +1,18 @@
 """W4 fuzz suite: the ``config.yml`` ingestion boundary.
 
-Sharp edges 5 and 6 (plan section 3). The three unguarded ``yaml.safe_load``
-sites are ``config/loader.py:288`` (``set_config_value``), ``:318`` (``load_config``)
-and ``:340`` (``add_custom_provider``); the pydantic raise is ``:227``
-(``_validate_and_merge``). The CLI reaches ``:318`` first, through the root
-callback ``_init`` (``app.py:257``), before any subcommand runs.
+Sharp edges 5 and 6 (plan section 3). The three ``yaml.safe_load`` sites —
+``loader.set_config_value``, ``loader.load_config`` and
+``loader.add_custom_provider`` — funnel through ``loader._read_config_mapping``,
+which raises ``ConfigLoadError`` for invalid YAML or a non-mapping top level.
+The CLI reaches ``load_config`` first, through the root callback ``_init``
+(``app.py``), which maps ``ConfigLoadError`` and a wrongly typed config's
+pydantic ``ValidationError`` to exit 5 before any subcommand runs.
 
 Expected behaviour asserted here: every malformed ``config.yml`` maps to exit 5
 (``EXIT_CONFIG``) with the documented ``Config error`` token and no raw
-traceback. Observed today the CLI exits 1 with the raw exception. The library
-sites ``:288`` and ``:340`` are unreachable through the CLI with a corrupt config
-(``_init`` fails first), so they are driven directly.
-
-Known-broken behaviour carries ``xfail(strict=True)`` tied to a register row.
+traceback. The library sites ``set_config_value`` and ``add_custom_provider``
+are unreachable through the CLI with a corrupt config (``_init`` fails first),
+so they are driven directly.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-import yaml
 from pydantic import ValidationError
 
 import openreview_cli.app as app_module
@@ -45,33 +44,9 @@ _TIMEOUT_SECONDS = 20.0
 @pytest.mark.parametrize(
     "build",
     [
-        pytest.param(
-            corpus_state.corrupt_yaml,
-            id="corrupt-yaml",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="RT-020: yaml.YAMLError escapes load_config (loader.py:318) uncaught; "
-                "the CLI exits 1 with a raw ParserError instead of exit 5",
-            ),
-        ),
-        pytest.param(
-            corpus_state.list_not_map_yaml,
-            id="list-not-map",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="RT-020: a top-level list config makes _deep_merge (loader.py:231) raise "
-                "AttributeError; the CLI exits 1 instead of exit 5",
-            ),
-        ),
-        pytest.param(
-            corpus_state.wrong_typed_yaml,
-            id="wrong-typed",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="RT-021: a wrongly typed config raises raw pydantic ValidationError from "
-                "_validate_and_merge (loader.py:227); the CLI exits 1 instead of exit 5",
-            ),
-        ),
+        pytest.param(corpus_state.corrupt_yaml, id="corrupt-yaml"),
+        pytest.param(corpus_state.list_not_map_yaml, id="list-not-map"),
+        pytest.param(corpus_state.wrong_typed_yaml, id="wrong-typed"),
     ],
 )
 def test_config_malformed_cli_is_a_clean_config_error(
@@ -111,44 +86,44 @@ def test_config_extreme_well_formed_cli_is_handled(
     assert _state_probe.TRACEBACK_MARKER not in result.output
 
 
-# ── Library: the three unguarded yaml.safe_load sites and the pydantic raise ─
+# ── Library: the three read sites map malformed YAML to ConfigLoadError ─
 
 
-def test_library_load_config_reaches_the_yaml_parse(tmp_path: Path) -> None:
-    """The ``loader.py:318`` site is reached and the YAMLError is raw."""
+def test_library_load_config_maps_a_yaml_error_to_config_load_error(tmp_path: Path) -> None:
+    """The ``load_config`` read site is reached and raises ``ConfigLoadError``."""
     path = corpus_state.corrupt_yaml(tmp_path)
     with (
         _state_probe.count_calls(loader, "load_config") as hits,
-        pytest.raises(yaml.YAMLError),
+        pytest.raises(loader.ConfigLoadError),
     ):
         loader.load_config(path)
     assert hits[0] >= 1
 
 
-def test_library_set_config_value_reaches_the_yaml_parse(tmp_path: Path) -> None:
-    """The ``loader.py:288`` site is reached and the YAMLError is raw."""
+def test_library_set_config_value_maps_a_yaml_error_to_config_load_error(tmp_path: Path) -> None:
+    """The ``set_config_value`` read site is reached and raises ``ConfigLoadError``."""
     path = corpus_state.corrupt_yaml(tmp_path)
     with (
         _state_probe.count_calls(loader, "set_config_value") as hits,
-        pytest.raises(yaml.YAMLError),
+        pytest.raises(loader.ConfigLoadError),
     ):
         loader.set_config_value(path, "privacy.tier", "maximum")
     assert hits[0] >= 1
 
 
-def test_library_add_custom_provider_reaches_the_yaml_parse(tmp_path: Path) -> None:
-    """The ``loader.py:340`` site is reached and the YAMLError is raw."""
+def test_library_add_custom_provider_maps_a_yaml_error_to_config_load_error(tmp_path: Path) -> None:
+    """The ``add_custom_provider`` read site is reached and raises ``ConfigLoadError``."""
     path = corpus_state.corrupt_yaml(tmp_path)
     with (
         _state_probe.count_calls(loader, "add_custom_provider") as hits,
-        pytest.raises(yaml.YAMLError),
+        pytest.raises(loader.ConfigLoadError),
     ):
         loader.add_custom_provider(path, "p", "http://x", "P_API_KEY")
     assert hits[0] >= 1
 
 
 def test_library_load_config_reaches_the_pydantic_validation(tmp_path: Path) -> None:
-    """The ``loader.py:227`` pydantic raise is reachable and raw."""
+    """The ``_validate_and_merge`` pydantic raise is reachable and raw."""
     path = corpus_state.wrong_typed_yaml(tmp_path)
     with (
         _state_probe.count_calls(loader, "_validate_and_merge") as hits,

@@ -15,6 +15,17 @@ class AuthCorruptError(ValueError):
 AUTH_FILENAME = "auth.json"
 
 
+def _read_auth_json(path: Path) -> dict[str, Any]:
+    """Read auth.json, mapping a JSON decode failure to AuthCorruptError."""
+    try:
+        data: dict[str, Any] = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise AuthCorruptError(
+            f"{path} is corrupt: {exc}. Fix or delete the file and rerun `openreview gateway setup`."
+        ) from exc
+    return data
+
+
 def ensure_auth(auth_dir: Path) -> Path:
     path = auth_dir / AUTH_FILENAME
     if path.exists():
@@ -37,12 +48,7 @@ def load_auth(path: Path) -> dict[str, Any]:
     """
     if not path.exists():
         return {}
-    try:
-        data: dict[str, Any] = json.loads(path.read_text())
-    except json.JSONDecodeError as exc:
-        raise AuthCorruptError(
-            f"{path} is corrupt: {exc}. Fix or delete the file and rerun `openreview gateway setup`."
-        ) from exc
+    data = _read_auth_json(path)
     for key, val in list(data.items()):
         if isinstance(val, str):
             env_val = os.environ.get(key_to_env(key))
@@ -94,7 +100,7 @@ def has_key(auth_path: Path, provider: str) -> bool:
 def save_key(auth_path: Path, provider: str, key: str) -> None:
     """Save an API key for a provider to auth.json."""
     ensure_auth(auth_path.parent)
-    auth = json.loads(auth_path.read_text())
+    auth = _read_auth_json(auth_path)
     auth[provider] = key
     write_auth(auth_path, auth)
 
@@ -107,7 +113,7 @@ def save_provider_credentials(auth_path: Path, provider: str, creds: dict[str, s
     string entry is replaced by the dict.
     """
     ensure_auth(auth_path.parent)
-    auth: dict[str, Any] = json.loads(auth_path.read_text()) if auth_path.exists() else {}
+    auth: dict[str, Any] = _read_auth_json(auth_path) if auth_path.exists() else {}
     existing = auth.get(provider)
     if isinstance(existing, dict):
         existing.update(creds)
