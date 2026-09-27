@@ -9,10 +9,12 @@ fallback values. Every gateway-response parser must strip fences via
 
 from __future__ import annotations
 
+import re
+
 
 def fence_safe(text: str) -> str:
     """Break triple-backtick runs so embedded text cannot escape prompt code fences."""
-    return text.replace("```", "` ` `")
+    return re.sub(r"`{3,}", lambda m: " ".join("`" for _ in m.group()), text)
 
 
 def strip_fences(text: str) -> str:

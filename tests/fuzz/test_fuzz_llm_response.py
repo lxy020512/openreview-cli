@@ -3,9 +3,10 @@
 Every corpus variant from ``tests/helpers/corpus_llm.py`` is fed to
 ``llm_json.strip_fences`` and to ``review.extraction._parse_response`` and must
 satisfy one invariant: the parser returns the documented dict shape
-(``extraction.py:172``) and no unhandled exception escapes it. ``_parse_response``
-is the boundary that decides whether a model reply is usable, so a reply it
-cannot parse must degrade to the safe default dict, never crash.
+(``_SAFE_DEFAULT_RESPONSE`` in ``review/extraction.py``) and no unhandled
+exception escapes it. ``_parse_response`` is the boundary that decides whether a
+model reply is usable, so a reply it cannot parse must degrade to the safe
+default dict, never crash.
 
 Coverage read-back (plan W3 first task). ``tests/unit/test_llm_json.py:6-31``
 already asserts the ``strip_fences`` output for four fenced/plain shapes. This
@@ -13,8 +14,10 @@ suite does not re-assert that; the *gap* it fills is ``_parse_response`` (never
 covered before) plus the hostile variants the unit file does not have — see the
 register's W3 coverage read-back table.
 
-Known-broken behaviour (RT-014, RT-016, RT-017) is asserted as the CORRECT
-behaviour and carries ``xfail(strict=True)`` tied to a register row.
+RT-014 (non-object reply) and RT-016 (silent parse failure) are fixed and
+asserted as the CORRECT behaviour. Only RT-017 — a fence with no newline is left
+in place, so the reply never parses — is still known-broken and carries
+``xfail(strict=True)`` tied to a register row.
 """
 
 from __future__ import annotations
@@ -126,10 +129,6 @@ def test_non_utf8_payload_decodes_to_the_safe_default(monkeypatch: pytest.Monkey
     _NON_OBJECT_VARIANTS,
     ids=[variant for variant, _build in _NON_OBJECT_VARIANTS],
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-014: a valid-JSON non-object reply makes _parse_response raise AttributeError",
-)
 def test_non_object_reply_still_returns_a_dict(
     variant: str,
     build: Callable[[], str],
@@ -170,10 +169,6 @@ def test_malformed_reply_yields_the_safe_default_score(monkeypatch: pytest.Monke
     assert assessment.playbook_category == "confidentiality"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-016: a malformed reply yields a plausible default with no error signal",
-)
 def test_malformed_reply_is_signalled_not_silent(monkeypatch: pytest.MonkeyPatch) -> None:
     """A parse failure must be observable, not indistinguishable from 'uncertain'."""
     _llm_probe.install_gateway(monkeypatch, _extraction, "this is not JSON at all")

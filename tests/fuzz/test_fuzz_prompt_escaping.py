@@ -10,11 +10,14 @@ Scope (plan W3c, deliberately offline). This suite asserts two testable things:
    values do not propagate into a valid-looking object.
 
 It does NOT assert that a model "resists prompt injection" — with no live model
-there is nothing to resist. ``fence_safe``'s residual 5/8-backtick run (RT-018)
-and the out-of-range-confidence crash (RT-019) carry ``xfail(strict=True)``.
+there is nothing to resist. ``fence_safe`` now neutralises every backtick run
+(RT-018), and an out-of-range confidence (RT-019) degrades to the clean fallback
+instead of crashing the extractor.
 """
 
 from __future__ import annotations
+
+import json
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -23,7 +26,7 @@ from hypothesis import strategies as st
 from openreview_cli.llm_json import fence_safe
 from openreview_cli.review import extraction as _extraction
 from openreview_cli.review import qa as _qa
-from openreview_cli.review.models import Position, QAVerdict
+from openreview_cli.review.models import ClauseAssessment, Position, QAVerdict
 from tests.fuzz import _llm_probe
 
 pytestmark = pytest.mark.fuzz
@@ -41,8 +44,8 @@ _CATEGORY = _llm_probe.make_category()
 _CLAUSE = "The parties shall keep information confidential."
 
 
-def _extract(reply: str, monkeypatch: pytest.MonkeyPatch) -> _llm_probe.CannedGateway:
-    """Install a canned gateway and run one extraction; return the gateway."""
+def _extract(reply: str, monkeypatch: pytest.MonkeyPatch) -> ClauseAssessment:
+    """Install a canned gateway and run one extraction; return the assessment."""
     gateway = _llm_probe.install_gateway(monkeypatch, _extraction, reply)
     assessment = _extraction.extract_clause(
         clause_text=_CLAUSE,
@@ -52,7 +55,7 @@ def _extract(reply: str, monkeypatch: pytest.MonkeyPatch) -> _llm_probe.CannedGa
     )
     assert gateway.chat_call_count == 1
     assert assessment.clause_id == "clause-1"
-    return gateway
+    return assessment
 
 
 # ── fence_safe in the built prompt ──────────────────────────────────────────
@@ -70,10 +73,6 @@ def test_fence_safe_neutralises_a_clause_backtick_run() -> None:
 
 
 @pytest.mark.parametrize("run", ["`````", "````````"], ids=["five", "eight"])
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-018: fence_safe leaves a run of 5/8 backticks intact, so a ``` survives",
-)
 def test_fence_safe_neutralises_every_backtick_run(run: str) -> None:
     assert "```" not in fence_safe(run)
 
@@ -134,16 +133,22 @@ def test_hostile_qa_verdict_does_not_propagate(monkeypatch: pytest.MonkeyPatch) 
     assert result.qa_verdict is QAVerdict.uncertain
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-019: an out-of-range confidence escapes extract_clause as an uncaught ValueError",
-)
-def test_out_of_range_confidence_does_not_escape(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A hostile confidence must be clamped/dropped, not crash the extractor."""
-    _extract(
-        '{"position": "preferred", "confidence": 5.0, "citation": "x", "category_match": true}',
-        monkeypatch,
+@pytest.mark.parametrize("confidence", [5.0, 10**400], ids=["float-5.0", "huge-int"])
+def test_out_of_range_confidence_does_not_escape(
+    confidence: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hostile confidence must degrade to the clean fallback, not crash the extractor."""
+    reply = json.dumps(
+        {
+            "position": "preferred",
+            "confidence": confidence,
+            "citation": "x",
+            "category_match": True,
+        }
     )
+    assessment = _extract(reply, monkeypatch)
+    assert assessment.position is Position.UNCERTAIN
+    assert assessment.confidence == 0.0
 
 
 # ── Negative control: the fence-count oracle must be able to fail ───────────

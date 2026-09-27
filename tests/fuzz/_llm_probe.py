@@ -4,8 +4,9 @@ Private to ``tests/fuzz`` (there is no ``tests/fuzz/conftest.py``; the plan
 deleted it), so nothing here is a fixture. It supplies three things the three
 W3 suites share:
 
-* the documented safe-default response shape (``extraction.py:172``) and a
-  minimal valid review ``Category`` / ``ClauseAssessment``;
+* the documented safe-default response shape (``_SAFE_DEFAULT_RESPONSE`` in
+  ``review/extraction.py``) and a minimal valid review ``Category`` /
+  ``ClauseAssessment``;
 * a canned-gateway double built on
   ``tests.helpers.mock_gateway._MockGateway`` so a case can drive
   ``extract_clause`` / ``verify_assessment`` end to end with one hostile reply
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
 
     import pytest
 
-# The documented extraction fallback shape (extraction.py:172).
+# The documented extraction fallback shape (_SAFE_DEFAULT_RESPONSE).
 SAFE_DEFAULT_RESPONSE: dict[str, Any] = {
     "position": "uncertain",
     "confidence": 0.0,
