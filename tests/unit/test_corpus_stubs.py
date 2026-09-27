@@ -1,19 +1,21 @@
-"""Unit tests for the corpus stub modules (filled later by W2, W3 and W4)."""
+"""Unit tests for the hostile-input corpus modules."""
 
 from pathlib import Path
-
-import pytest
 
 from tests.helpers import corpus_docs, corpus_llm, corpus_state
 
 
-def test_stubs_are_wired(tmp_path: Path) -> None:
-    # corpus_docs was filled by W2, so it is no longer a stub; corpus_llm and
-    # corpus_state are still owned by W3 and W4 and must keep failing loudly.
-    with pytest.raises(NotImplementedError, match="owned by W3"):
-        corpus_llm.fenced()
-    with pytest.raises(NotImplementedError, match="owned by W4"):
-        corpus_state.corrupt_yaml(tmp_path)
+def test_corpus_llm_is_implemented() -> None:
+    # W3 filled corpus_llm: each variant returns a hostile model reply.
+    assert isinstance(corpus_llm.fenced(), str)
+    assert isinstance(corpus_llm.non_utf8_bytes(), bytes)
+
+
+def test_corpus_state_is_implemented(tmp_path: Path) -> None:
+    # W4 filled corpus_state: each generator writes a real file and returns it.
+    path = corpus_state.corrupt_yaml(tmp_path)
+    assert path.exists()
+    assert path.stat().st_size > 0
 
 
 def test_corpus_docs_is_implemented(tmp_path: Path) -> None:
