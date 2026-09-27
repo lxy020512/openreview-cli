@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from openreview_cli.retrieval.errors import MalformedChunkError
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
@@ -134,7 +136,17 @@ def _save_last_indexed(db_dir: str | Path, doc_path: str, doc_hash: str) -> None
         logger.debug("Could not write last_indexed.json", exc_info=True)
 
 
-def _normalize_chunk(chunk: dict[str, Any], document_id: str) -> dict[str, Any]:
+def _require_keys(chunk: dict[str, Any], keys: tuple[str, ...], index: int | None) -> None:
+    """Raise MalformedChunkError if any required key is absent from ``chunk``."""
+    for key in keys:
+        if key not in chunk:
+            where = f"chunk {index}" if index is not None else "chunk"
+            raise MalformedChunkError(f"{where} is missing required key '{key}'")
+
+
+def _normalize_chunk(
+    chunk: dict[str, Any], document_id: str, index: int | None = None
+) -> dict[str, Any]:
     """Normalize a chunk dict to the retrieval storage schema.
 
     Accepts both the chunk-output shape (``id``, ``source_clause_title``,
@@ -142,10 +154,18 @@ def _normalize_chunk(chunk: dict[str, Any], document_id: str) -> dict[str, Any]:
     (``chunk_id``, ``clause_heading``, ``char_start``, ...).
 
     Returns a new dict — never mutates the input.
+
+    Raises:
+        MalformedChunkError: If the chunk is not an object or a required key is missing.
     """
+    if not isinstance(chunk, dict):
+        where = f"chunk {index}" if index is not None else "chunk"
+        raise MalformedChunkError(f"{where} is not a JSON object")
     if "chunk_id" in chunk:
+        _require_keys(chunk, ("text",), index)
         normalized = dict(chunk)
     else:
+        _require_keys(chunk, ("id", "text"), index)
         structural = chunk.get("structural_location") or chunk.get("source_clause_title") or ""
         normalized = {
             "chunk_id": chunk["id"],
@@ -210,8 +230,11 @@ def ingest_document(
 
         # Normalize both chunk-output schema (id/source_*) and already-
         # normalized fixture schema (chunk_id/clause_heading) to storage keys.
-        resolved_doc_id = document_id or chunk_list[0].get("document_id", "unknown")
-        chunk_list = [_normalize_chunk(c, resolved_doc_id) for c in chunk_list]
+        head = chunk_list[0] if chunk_list else None
+        resolved_doc_id = document_id or (
+            head.get("document_id", "unknown") if isinstance(head, dict) else "unknown"
+        )
+        chunk_list = [_normalize_chunk(c, resolved_doc_id, i) for i, c in enumerate(chunk_list)]
 
         # T064: Large document warning
         if total > 5000:

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from openreview_cli.retrieval.errors import MalformedChunkError
 from openreview_cli.retrieval.ingest import ingest_document
 
 
@@ -433,3 +434,81 @@ class TestChunkSchemaNormalization:
         assert normalized["char_end"] == 450
         assert normalized["parent_chunk_id"] == "c4"
         assert normalized["heading_chain"] == ["Article 7 > Section 7.2"]
+
+
+class TestMalformedChunk:
+    """A chunk missing a required key is a typed error, not a bare KeyError."""
+
+    def test_missing_id_names_the_key_and_index(self) -> None:
+        from openreview_cli.retrieval.ingest import _normalize_chunk
+
+        with pytest.raises(MalformedChunkError) as excinfo:
+            _normalize_chunk({"text": "x"}, "doc-1", 3)
+
+        message = str(excinfo.value)
+        assert "'id'" in message
+        assert "chunk 3" in message
+
+    def test_missing_text_names_the_key(self) -> None:
+        from openreview_cli.retrieval.ingest import _normalize_chunk
+
+        with pytest.raises(MalformedChunkError, match="'text'"):
+            _normalize_chunk({"id": "c5"}, "doc-1", 0)
+
+    def test_ingest_document_propagates_the_typed_error(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "malformed.db"
+
+        with pytest.raises(MalformedChunkError, match="'id'"):
+            ingest_document([{"text": "x"}], str(db_path), method="sparse")
+
+    @pytest.mark.parametrize(
+        "not_an_object", ["not an object", "id text", ["id", "text"], 42, None], ids=repr
+    )
+    def test_non_dict_element_names_the_index(self, not_an_object: Any) -> None:
+        """A non-object element must not reach the key access as a dict.
+
+        ``"id text"`` and ``["id", "text"]`` are the dangerous shapes: the
+        membership test in ``_require_keys`` passes for them, so the old code
+        fell through to ``chunk.get(...)`` and raised a bare ``AttributeError``.
+        """
+        from openreview_cli.retrieval.ingest import _normalize_chunk
+
+        with pytest.raises(MalformedChunkError) as excinfo:
+            _normalize_chunk(not_an_object, "doc-1", 2)
+
+        message = str(excinfo.value)
+        assert "chunk 2" in message
+        assert "JSON object" in message
+
+    def test_non_dict_element_without_index_says_chunk(self) -> None:
+        from openreview_cli.retrieval.ingest import _normalize_chunk
+
+        not_an_object: Any = "not an object"
+        with pytest.raises(MalformedChunkError, match="chunk is not a JSON object"):
+            _normalize_chunk(not_an_object, "doc-1")
+
+    def test_ingest_document_rejects_a_non_dict_element_after_the_first(
+        self, tmp_path: Path, sample_chunks: list[dict[str, Any]]
+    ) -> None:
+        db_path = tmp_path / "non_object.db"
+        chunks: list[Any] = [sample_chunks[0], "not an object"]
+
+        with pytest.raises(MalformedChunkError) as excinfo:
+            ingest_document(chunks, str(db_path), method="sparse")
+
+        message = str(excinfo.value)
+        assert "chunk 1" in message
+        assert "JSON object" in message
+
+    def test_ingest_document_non_dict_head_is_a_typed_error(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "non_object_head.db"
+
+        with pytest.raises(MalformedChunkError, match="JSON object"):
+            ingest_document(["not an object"], str(db_path), method="sparse")  # type: ignore[list-item]
+
+    def test_ingest_document_empty_list_yields_zero_chunks(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "empty_chunks.db"
+
+        meta = ingest_document([], str(db_path), method="sparse")
+
+        assert meta["chunk_count"] == 0

@@ -53,6 +53,53 @@ def test_config_get_unknown_key_shows_error(
     assert result.exit_code == 5
 
 
+def test_config_get_rejects_env_only_unknown_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A key set only via env is not readable: env overrides are schema-scoped.
+
+    `config get` must not become a generic echo of every OPENREVIEW_* variable
+    (that would disclose secrets such as OPENREVIEW_PDF_PASSWORD)."""
+    config_file = _setup_config(monkeypatch, tmp_path)
+    config_file.write_text("version: 1\n")
+    monkeypatch.setenv("OPENREVIEW_FOO__BAR", "x")
+
+    result = runner.invoke(app, ["config", "get", "foo.bar"])
+
+    assert result.exit_code == 5
+    assert "x" not in result.stdout
+
+
+def test_config_get_applies_known_key_env_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A schema-known key still honours its env override via load_config."""
+    config_file = _setup_config(monkeypatch, tmp_path)
+    config_file.write_text("version: 1\nprivacy:\n  tier: balanced\n")
+    monkeypatch.setenv("OPENREVIEW_PRIVACY__TIER", "performance")
+
+    result = runner.invoke(app, ["config", "get", "privacy.tier"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "performance"
+
+
+def test_config_get_round_trips_key_written_by_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Issue #125: a key persisted by `config set` is readable back via
+    `config get`, including keys outside the schema."""
+    config_file = _setup_config(monkeypatch, tmp_path)
+    config_file.write_text("version: 1\n")
+
+    set_result = runner.invoke(app, ["config", "set", "rt005.unknown.key", "x"])
+    assert set_result.exit_code == 0
+
+    get_result = runner.invoke(app, ["config", "get", "rt005.unknown.key"])
+    assert get_result.exit_code == 0
+    assert get_result.stdout.strip() == "x"
+
+
 def test_config_set_updates_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     config_file = _setup_config(monkeypatch, tmp_path)
     config_file.write_text("version: 1\nprivacy:\n  tier: balanced\n")

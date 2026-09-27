@@ -228,7 +228,6 @@ def assert_mapping_artifact_is_complete_or_absent(review_dir: Path, key: str) ->
     read_pii_mapping(review_dir, key)  # an InvalidToken here is a half write
 
 
-@pytest.mark.xfail(strict=True, reason="RT-045")
 def test_interrupt_mid_pii_mapping_write_leaves_no_half_written_mapping(
     state: w8.State, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -255,16 +254,14 @@ def test_interrupt_mid_pii_mapping_write_leaves_no_half_written_mapping(
     assert_mapping_artifact_is_complete_or_absent(review_dir, "k" * 32)
 
 
-def test_a_half_written_mapping_survives_today(
+def test_a_half_written_mapping_does_not_survive(
     state: w8.State, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Characterisation pinning RT-045: the half write lands, unreadable and 0664.
+    """RT-045 fixed: ``persist_pii_result`` clears a partial artifact below it.
 
-    ``write_pii_mapping`` writes the ciphertext, then chmods (``mapping.py:41-42``),
-    with no temp-file-and-rename, so an interrupt between the two leaves a partial
-    artifact with the process umask's permissions (0o664 here, never 0o600) that
-    the next read rejects with a bare ``InvalidToken``. No ``pii_cache`` row and no
-    ``pii_audit_trail`` row exist yet, so the artifact is an orphan.
+    The stand-in writer still plants a truncated, non-0600 ``pii_map.enc`` and
+    raises; ``persist_pii_result`` must remove it before re-raising, so no orphan
+    fragment survives at the final path.
     """
     review_dir = state.data_dir / "reviews" / ("a" * 12)
     monkeypatch.setattr(
@@ -286,12 +283,7 @@ def test_a_half_written_mapping_survives_today(
         )
 
     path = review_dir / "pii_map.enc"
-    assert path.exists(), "the partial artifact should have survived"
-    assert path.stat().st_size < 200, "the artifact is a truncated fragment"
-    assert path.stat().st_mode & 0o077, "the partial artifact is not 0600"
-    with pytest.raises(Exception) as exc_info:
-        read_pii_mapping(review_dir, "k" * 32)
-    assert type(exc_info.value).__name__ == "InvalidToken", repr(exc_info.value)
+    assert not path.exists(), "the partial artifact survived at the final path"
     counts = w8.assert_no_partial_rows(state.db_path)
     assert counts["pii_cache"] == 0 and counts["pii_audit_trail"] == 0, counts
 
@@ -326,12 +318,12 @@ def _schema(db_path: Path) -> list[tuple[str, str]]:
 def test_interrupt_between_migration_and_version_bump_is_recoverable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The migration is not wrapped in a transaction, so ``user_version`` lags.
+    """The migration and its version bump are one transaction, so they agree.
 
-    The observable damage is bounded, and recovery holds: a second
-    ``run_migrations`` reaches the same version and the same schema as a fresh
-    database. The recovery relies on the unconditional ``OperationalError``
-    swallow of RT-023 (observed as "skipped statement (schema already matches)").
+    An interrupt after the migration statement but before the version bump rolls
+    the migration back with it: ``user_version`` never names a schema that is not
+    fully applied. Recovery still holds: a second ``run_migrations`` reaches the
+    same version and the same schema as a fresh database.
     """
     db_path = tmp_path / "mig.db"
     real_exec = database_mod._exec_migration_safely
@@ -343,14 +335,14 @@ def test_interrupt_between_migration_and_version_bump_is_recoverable(
         run_migrations(db_path)
 
     monkeypatch.setattr(database_mod, "_exec_migration_safely", real_exec)
-    # Characterisation: the schema is AHEAD of the recorded version.
+    # Characterisation: the rolled-back migration left the version at 10.
     assert w8.user_version(db_path) == 10, w8.user_version(db_path)
     conn = sqlite3.connect(db_path)
     try:
         columns = [str(r[1]) for r in conn.execute("PRAGMA table_info(review_reports)")]
     finally:
         conn.close()
-    assert "client_id" in columns, "migration 011's column should already exist"
+    assert "client_id" not in columns, "migration 011's column should have been rolled back"
 
     # Recovery: a second run converges on a fresh database's schema.
     run_migrations(db_path)
@@ -361,7 +353,6 @@ def test_interrupt_between_migration_and_version_bump_is_recoverable(
     w8.assert_db_consistent(db_path)
 
 
-@pytest.mark.xfail(strict=True, reason="RT-046")
 def test_interrupted_migration_keeps_user_version_equal_to_the_applied_schema(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

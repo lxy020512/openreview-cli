@@ -91,6 +91,49 @@ def test_config_path_uses_platformdirs() -> None:
     assert "openreview" in str(config_dir).lower()
 
 
+def test_set_config_value_persists_an_unknown_key(tmp_path: Path) -> None:
+    """Issue #125: a key outside the schema must survive `config set` and be
+    readable back from the raw file, instead of being silently dropped."""
+    from openreview_cli.config.loader import get_stored_config_value, set_config_value
+
+    config_path = tmp_path / "config.yml"
+    load_config(config_path)
+
+    set_config_value(config_path, "rt005.unknown.key", "x")
+
+    assert get_stored_config_value(config_path, "rt005.unknown.key") == "x"
+
+
+def test_get_stored_config_value_ignores_env_only_unknown_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """File-only contract: an unknown key supplied only via env is NOT readable
+    through the raw-file reader, so ``config get`` cannot echo arbitrary
+    ``OPENREVIEW_*`` environment variables (e.g. secrets)."""
+    from openreview_cli.config.loader import get_stored_config_value
+
+    config_path = tmp_path / "config.yml"
+    load_config(config_path)
+    monkeypatch.setenv("OPENREVIEW_FOO__BAR", "x")
+
+    with pytest.raises(KeyError):
+        get_stored_config_value(config_path, "foo.bar")
+
+
+def test_get_stored_config_value_ignores_env_over_stored(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """File-only contract: env does not shadow a value persisted in the file."""
+    from openreview_cli.config.loader import get_stored_config_value, set_config_value
+
+    config_path = tmp_path / "config.yml"
+    load_config(config_path)
+    set_config_value(config_path, "foo.bar", "from-file")
+    monkeypatch.setenv("OPENREVIEW_FOO__BAR", "from-env")
+
+    assert get_stored_config_value(config_path, "foo.bar") == "from-file"
+
+
 def test_set_grounding_slot_persists_and_resolves(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

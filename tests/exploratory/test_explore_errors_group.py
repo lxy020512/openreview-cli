@@ -112,7 +112,6 @@ def test_config_set_known_key_persists(
 
 
 @pytest.mark.fast
-@pytest.mark.xfail(strict=True, reason="RT-005")
 def test_config_set_unknown_key_is_greppable_after_set(
     isolated_dirs: Path, invoke: Callable[[list[str]], Result]
 ) -> None:
@@ -155,7 +154,6 @@ def test_pii_delete_missing_long_hash_reports_nothing(
 
 
 @pytest.mark.fast
-@pytest.mark.xfail(strict=True, reason="RT-002")
 def test_pii_delete_short_hash_is_a_clean_usage_error(
     isolated_dirs: Path, invoke: Callable[[list[str]], Result]
 ) -> None:

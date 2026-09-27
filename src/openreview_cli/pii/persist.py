@@ -14,6 +14,7 @@ and the legacy ``pii_audit.json`` file are handled by
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -115,7 +116,22 @@ def persist_pii_result(
             Keep it the basename: a full path can carry a client name.
     """
     if pii_result.mapping:
-        mapping_path = write_pii_mapping(pii_result.mapping, review_dir, encryption_key)
+        # Rollback scope: only the mapping artifact this call may have written is
+        # removed.  A legacy ``pii_audit.json`` (owned by the legacy
+        # ``strip_and_persist`` path) is never touched here.
+        mapping_file = review_dir / "pii_map.enc"
+        had_prior = mapping_file.exists()
+        try:
+            mapping_path = write_pii_mapping(pii_result.mapping, review_dir, encryption_key)
+        except BaseException:
+            # On a first write a failure can leave a partial artifact behind (the
+            # real writer's temp-and-replace still fails before the rename); remove
+            # it.  On a re-write the real atomic writer leaves the PRIOR COMPLETE
+            # file untouched when its ``os.replace`` fails — do not destroy it.
+            if not had_prior:
+                with contextlib.suppress(OSError):
+                    mapping_file.unlink()
+            raise
 
         review_result_path = review_dir / "stripped.txt"
         review_result_path.write_text(pii_result.stripped_text, encoding="utf-8")

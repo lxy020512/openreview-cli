@@ -2,6 +2,7 @@ import contextlib
 import json
 import logging
 import re
+import sqlite3
 import sys
 import time
 from datetime import UTC
@@ -15,11 +16,12 @@ from openreview_cli.config.auth import ensure_auth
 from openreview_cli.config.loader import (
     ConfigLoadError,
     get_config_value,
+    get_stored_config_value,
     load_config,
     set_config_value,
 )
 from openreview_cli.config.paths import get_config_dir, get_data_dir, get_log_dir
-from openreview_cli.errors import EXIT_USAGE, config_error
+from openreview_cli.errors import EXIT_USAGE, EXIT_USER_ERROR, config_error, fail, usage_error
 from openreview_cli.gateway.redaction import install_on_root_handlers
 from openreview_cli.product_modes import PRODUCT_MODES as _PRODUCT_MODE_SPECS
 from openreview_cli.storage.clients import (
@@ -271,7 +273,13 @@ def _init(debug: bool = False, verbose: bool = False) -> None:
     logger.info("auth configured")
 
     data_dir = get_data_dir()
-    init_database(data_dir / "openreview.db")
+    db_path = data_dir / "openreview.db"
+    try:
+        init_database(db_path)
+    except sqlite3.OperationalError:
+        raise
+    except sqlite3.DatabaseError as exc:
+        fail(f"cannot open database {db_path}: {exc}", EXIT_USER_ERROR)
     logger.info("database initialized")
 
     _cleanup_expired_pii(data_dir)
@@ -330,7 +338,7 @@ def _load_ndax_chunks(file_path: Path) -> list[dict[str, Any]]:
     except (UnicodeDecodeError, json.JSONDecodeError):
         typer.echo(f"Error: {file_path.name} is not a valid .ndax JSON file.", err=True)
         raise typer.Exit(code=1) from None
-    if not isinstance(data, list) or (data and not isinstance(data[0], dict)):
+    if not isinstance(data, list) or any(not isinstance(c, dict) for c in data):
         typer.echo(
             f"Error: {file_path.name} is not a valid .ndax JSON file (expected a list of chunks).",
             err=True,
@@ -486,9 +494,12 @@ def config_get(key: str) -> None:
 
     try:
         value = get_config_value(config, key)
-        typer.echo(str(value))
     except KeyError:
-        config_error(f"Unknown config key: {key}")
+        try:
+            value = get_stored_config_value(config_path, key)
+        except KeyError:
+            config_error(f"Unknown config key: {key}")
+    typer.echo(str(value))
 
 
 @config_app.command("set")
@@ -561,6 +572,9 @@ def pii_delete(
 ) -> None:
     from openreview_cli.config.paths import get_data_dir
     from openreview_cli.pii.retention import delete_pii_data
+
+    if len(document_hash) < 8:
+        usage_error("document hash prefix must be at least 8 characters")
 
     db_path = get_data_dir() / "openreview.db"
     result = delete_pii_data(db_path, document_hash)
@@ -2098,7 +2112,7 @@ def ingest(
 ) -> None:
     """Index a pre-chunked .ndax JSON file for retrieval."""
     from openreview_cli.gateway.router import Gateway
-    from openreview_cli.retrieval.errors import EmbeddingError
+    from openreview_cli.retrieval.errors import EmbeddingError, MalformedChunkError
     from openreview_cli.retrieval.ingest import (
         _ensure_db_dir,
         get_index_for_document,
@@ -2168,6 +2182,8 @@ def ingest(
         typer.echo(f"Indexed {chunk_count} chunks in {elapsed:.1f}s")
         typer.echo(f"  Method: {final_method}{embed_info}")
         typer.echo(f"  DB: {db_path}")
+    except MalformedChunkError as e:
+        usage_error(f"{e} in {file_path.name}")
     except EmbeddingError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(code=1) from None

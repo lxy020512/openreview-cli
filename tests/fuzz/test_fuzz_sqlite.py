@@ -60,11 +60,6 @@ def _table_names(db_path: Path) -> set[str]:
 # ── Sharp edge 8: the migration swallow (the required verdict) ──────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-023: _exec_migration_safely (database.py:68-78) swallows every OperationalError, "
-    "not only the three documented idempotency patterns; a real failure does not propagate",
-)
 def test_migration_swallow_does_not_hide_a_non_matching_operational_error(tmp_path: Path) -> None:
     conn = database.get_connection(tmp_path / "scratch.db")
     try:
@@ -80,11 +75,6 @@ def test_migration_swallow_does_not_hide_a_non_matching_operational_error(tmp_pa
         conn.close()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-023: a failing migration is swallowed AND recorded as applied; run_migrations "
-    "(database.py:43-44) still bumps user_version after the skip",
-)
 def test_run_migrations_does_not_record_a_failed_migration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -145,12 +135,6 @@ def test_init_database_makes_a_usable_schema(build: Callable[[Path], Path], tmp_
 # ── A corrupt shared database must fail cleanly, not crash _init ────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-025: a corrupt shared openreview.db makes _init -> init_database "
-    "(app.py:264 -> database.py:37) raise a raw sqlite3.DatabaseError; the CLI exits 1 with a "
-    "traceback instead of a code from errors.py",
-)
 def test_corrupt_shared_database_is_a_clean_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

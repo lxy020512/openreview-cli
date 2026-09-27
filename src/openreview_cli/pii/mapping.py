@@ -8,7 +8,9 @@ File format (pii_map.enc):
   Remaining bytes: Fernet token (encrypted JSON)
 """
 
+import contextlib
 import json
+import os
 import secrets
 from pathlib import Path
 from typing import Any, cast
@@ -38,8 +40,16 @@ def write_pii_mapping(
     token = encrypt_pii_mapping(plaintext, fernet)
 
     path = review_dir / "pii_map.enc"
-    path.write_bytes(salt + token)
-    path.chmod(0o600)
+    tmp_path = review_dir / f".pii_map.enc.{secrets.token_hex(8)}.tmp"
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(salt + token)
+        os.replace(tmp_path, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        raise
     return path
 
 

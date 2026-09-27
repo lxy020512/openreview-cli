@@ -139,7 +139,6 @@ def test_gateway_provider_add_rejects_malformed_cred(
 
 
 @pytest.mark.fast
-@pytest.mark.xfail(strict=True, reason="RT-004")
 def test_prompt_command_does_not_rewind_schema_version(
     isolated_dirs: Path, invoke: Callable[[list[str]], Result]
 ) -> None:
@@ -199,7 +198,6 @@ def test_prompt_show_missing_is_user_error(
 
 
 @pytest.mark.fast
-@pytest.mark.xfail(strict=True, reason="RT-007")
 def test_prompt_show_version_zero_is_rejected(
     isolated_dirs: Path, invoke: Callable[[list[str]], Result]
 ) -> None:

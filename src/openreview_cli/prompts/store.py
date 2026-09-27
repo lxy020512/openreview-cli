@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 from openreview_cli.prompts.models import Prompt, PromptBinding, PromptVersion
 from openreview_cli.slots import VALID_SLOTS
+from openreview_cli.storage.database import iter_sql_statements
 
 
 class PromptStore:
@@ -28,9 +29,15 @@ class PromptStore:
         sql = (
             Path(__file__).parent.parent / "storage" / "migrations" / "004_prompts.sql"
         ).read_text()
+        statements = [
+            statement
+            for statement in iter_sql_statements(sql)
+            if statement and not statement.strip().upper().startswith("PRAGMA USER_VERSION")
+        ]
         conn = self._conn()
         try:
-            conn.executescript(sql)
+            for statement in statements:
+                conn.execute(statement)
             conn.commit()
         finally:
             conn.close()
