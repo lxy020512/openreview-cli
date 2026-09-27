@@ -393,7 +393,7 @@ def _has_client(db_path: Path, client_id: str) -> bool:
 @pytest.mark.xfail(
     strict=True,
     reason="a CLI start blocked by another writer's migration reports an unhandled "
-    "OperationalError('database is locked') instead of a clean error",
+    "OperationalError('database is locked') instead of a clean error (RT-049)",
 )
 def test_a_cli_start_racing_an_open_migration_transaction_is_a_clean_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
