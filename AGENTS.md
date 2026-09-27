@@ -33,8 +33,11 @@ src/openreview_cli/          # Package (src layout). Entry: app.py (Typer), __ma
   ├─ review/                 # Pipeline + agents + memo; playbooks/ (24 YAML)
   ├─ pipeline/ chunking/ retrieval/ grounding/ negotiation/ bilateral/ recovery/ graph/ benchmark/ prompts/
   └─ tui/                    # Textual app (app.py, screens/, domain/, tabs/)
-tests/{unit,integration,fixtures,helpers}   # 207 unit + 149 integration test files
-tests/exploratory/           # 87 adversarial CLI/TUI probes (feat/design-ux-remediation); in the default -m fast pool
+tests/{unit,integration,fixtures,helpers}   # 212 unit + 156 integration test files
+tests/exploratory/           # 186 adversarial CLI probes; in the default -m fast pool
+tests/fuzz/                  # hostile-input fuzz suites (PDF, DOCX, LLM JSON, config, auth, playbook, SQLite)
+tests/redteam/               # egress-gate and output-surface leakage attacks on the privacy guarantees
+tests/chaos/                 # gateway faults, interruption, resource limits, concurrency
 Makefile                     # make test = test-offline + test-memory; also test-fast / test-slow
 scripts/                     # 9 standalone benchmark scripts (top level); parity/ inventories
 specs/                       # new specs land here; the outdated 001–034 are under archive/
@@ -64,8 +67,10 @@ uv sync                       # runtime + dev deps into .venv
 
 ```bash
 uv run openreview --help
-uv run pytest -m "fast" -q              # auto-marked default pool (3550/3935 tests); not all sub-second
-uv run pytest -m "fast or slow" -q      # all offline tests except memory + network/live (3910/3935)
+uv run pytest -m "fast" -q              # auto-marked default pool (4009/4420 tests); not all sub-second
+uv run pytest -m "fast or slow" -q      # all offline tests except memory + network/live (4393/4420)
+uv run pytest tests/fuzz tests/redteam -q   # fuzz + red team suites (fast, offline)
+uv run pytest tests/chaos -q -m "not memory" --reruns 0   # the chaos CI job's command
 uv run pytest -m slow                   # TUI suite + heavy non-TUI tests (~360; Textual run_test startup cost)
 uv run pytest -m memory -q              # memory tests ALWAYS run solo (see Gotchas)
 uv run pytest tests/unit/test_x.py::test_y  # single test
@@ -74,9 +79,9 @@ uv run mypy src/ tests/                 # strict
 uv run pre-commit run --all-files       # before every commit (pre-commit is a global tool, not a dev-group dep)
 ```
 
-Pytest markers (pyproject.toml): `fast`, `slow`, `integration`, `e2e`, `memory`, `no_memory`, `benchmark`, `accuracy`, `network`, `live`.
+Pytest markers (pyproject.toml): `fast`, `slow`, `integration`, `e2e`, `memory`, `no_memory`, `benchmark`, `accuracy`, `network`, `live`, plus the discipline labels `fuzz`, `chaos`, `redteam` (documentation labels; they do not gate selection).
 
-**CI** (`ci.yml`, push to main + PRs): 7 parallel jobs — `lint`, `types`, `test` (unit only), `memory` (installs spaCy model), `integration` (non-tui, non-memory/slow), `tui` (`-m slow --reruns 1`), `benchmark` (main only, `|| true`). Uses `actions/checkout@v7` + `astral-sh/setup-uv@v10.1.0`.
+**CI** (`ci.yml`, push to main + PRs): 8 parallel jobs. They are `lint`, `types`, `test` (unit plus `tests/fuzz` and `tests/redteam`), `memory` (installs the spaCy model and runs `-m memory` solo), `integration` (non-tui, non-memory/slow), `tui` (`-m slow --reruns 1`), `chaos` (`tests/chaos -m "not memory" --reruns 0`), and `benchmark` (main only, `|| true`). Uses `actions/checkout@v7` plus `astral-sh/setup-uv@v10.1.0`.
 
 **Pre-commit**: hygiene hooks, `ruff --fix`, `ruff-format`, `mypy` (`uv run mypy src/ tests/`), `pytest-fast` (`uv run pytest tests/unit/ --collect-only -q`). `uv run pre-commit install` once per clone; sub-agents in fresh shells must verify `.git/hooks/pre-commit` exists or run `uv run pre-commit run --all-files` before `git add` and stage reformats. The source of truth for all of the above — hook ids, the pinned `rev`s, and the `mypy`/`pytest-fast` commands — is `.pre-commit-config.yaml`; edit that file whenever hook behavior changes, since the installed `.git/hooks/pre-commit` is generated from it.
 
