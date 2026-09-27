@@ -5,16 +5,29 @@ from openreview_cli.parsing.docx_parser import DocxParser
 from openreview_cli.parsing.models import Clause, Document, ParseError
 from openreview_cli.parsing.pdf_parser import PdfParser
 
+# PDF writers may leave arbitrary junk (signatures, padding, bad editors' bytes)
+# after the final ``%%EOF``; the marker must merely occur somewhere in the tail,
+# not within the last few bytes, so a genuinely truncated file (marker gone) is
+# still rejected while a merely padded one is handed to pymupdf.
+_EOF_SCAN_BYTES = 8192
+
 
 def _pdf_ends_with_eof(path: Path) -> bool:
     with open(path, "rb") as f:
         f.seek(0, 2)
         end = f.tell()
-        if end < 10:
-            return False
-        f.seek(max(0, end - 10))
+        f.seek(max(0, end - _EOF_SCAN_BYTES))
         tail = f.read()
-        return b"%%EOF" in tail
+    return b"%%EOF" in tail
+
+
+def _empty_error() -> ParseError:
+    return ParseError(
+        exit_code=8,
+        category="empty",
+        message="The file appears to be empty or unreadable.",
+        action="Provide a non-empty document file.",
+    )
 
 
 def _parser_for(path: str | Path) -> PdfParser | DocxParser:
@@ -39,21 +52,26 @@ def _parser_for(path: str | Path) -> PdfParser | DocxParser:
             action="Provide a PDF or DOCX file.",
         )
 
-    if path.stat().st_size == 0:
-        raise ParseError(
-            exit_code=8,
-            category="empty",
-            message="The file appears to be empty or unreadable.",
-            action="Provide a non-empty document file.",
-        )
+    # A directory (or any non-regular path) named ``*.pdf`` cannot be read as a
+    # document; reject it here so the probe below never hits IsADirectoryError.
+    if not path.is_file():
+        raise _empty_error()
 
-    if ext == ".pdf" and not _pdf_ends_with_eof(path):
-        raise ParseError(
-            exit_code=8,
-            category="corrupt",
-            message="The file appears to be corrupt or truncated.",
-            action="Provide a valid PDF file.",
-        )
+    try:
+        if path.stat().st_size == 0:
+            raise _empty_error()
+
+        if ext == ".pdf" and not _pdf_ends_with_eof(path):
+            raise ParseError(
+                exit_code=8,
+                category="corrupt",
+                message="The file appears to be corrupt or truncated.",
+                action="Provide a valid PDF file.",
+            )
+    except OSError:
+        # e.g. a ``*.pdf`` whose permissions deny reads: an unreadable file is
+        # reported like an empty one rather than leaking PermissionError.
+        raise _empty_error() from None
 
     if ext == ".pdf":
         return PdfParser(path)

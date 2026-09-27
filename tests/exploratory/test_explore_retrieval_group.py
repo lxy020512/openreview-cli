@@ -26,7 +26,7 @@ def _text(result: Result) -> str:
     return " ".join(raw.split())
 
 
-def _write_ndax(path: Path, chunks: list[dict[str, object]]) -> Path:
+def _write_ndax(path: Path, chunks: list[object]) -> Path:
     path.write_text(json.dumps(chunks), encoding="utf-8")
     return path
 
@@ -75,20 +75,36 @@ def test_ingest_empty_chunk_list_is_user_error(
 
 
 @pytest.mark.fast
-@pytest.mark.xfail(strict=True, reason="RT-006")
 def test_ingest_chunk_without_id_is_a_clean_error(
     isolated_dirs: Path, invoke: Callable[[list[str]], Result], tmp_path: Path
 ) -> None:
-    """RT-006: a well-formed JSON list whose chunk dicts lack the required
-    ``id`` key reaches ``ingest._normalize_chunk`` and raises an uncaught
-    ``KeyError('id')`` (raw traceback, no message), instead of a clean exit.
-
-    Intended: a usage/user error naming the malformed chunk (exit 2).
+    """RT-006 (fixed): a well-formed JSON list whose chunk dicts lack the
+    required ``id`` key is now a clean usage error (exit 2) naming the missing
+    key, instead of an uncaught ``KeyError('id')`` (raw traceback).
     """
     ndax = _write_ndax(tmp_path / "noid.ndax", [{"document_id": _DOC_ID, "text": "x"}])
     result = invoke(["ingest", str(ndax)])
     assert result.exit_code == EXIT_USAGE, (result.exit_code, _text(result))
     assert "id" in _text(result).lower()
+
+
+@pytest.mark.fast
+def test_ingest_non_object_chunk_after_the_first_is_a_clean_error(
+    isolated_dirs: Path, invoke: Callable[[list[str]], Result], tmp_path: Path
+) -> None:
+    """Follow-up to RT-006: only ``data[0]`` used to be validated, so a non-dict
+    element after index 0 escaped as a raw ``AttributeError:(...)'get'`` — exit 1
+    with empty stdout. The loader now rejects every element up front (exit 1,
+    same file-level message), so nothing reaches chunk normalization.
+    """
+    ndax = _write_ndax(tmp_path / "nonobj.ndax", [_CHUNK, "not an object"])
+    result = invoke(["ingest", str(ndax)])
+
+    assert result.exit_code == EXIT_USER_ERROR, (result.exit_code, _text(result))
+    text = _text(result)
+    assert "not a valid .ndax JSON file" in text, text
+    assert "Traceback" not in text, text
+    assert "AttributeError" not in text, text
 
 
 # ── retrieve ──────────────────────────────────────────────────────────────

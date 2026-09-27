@@ -298,6 +298,24 @@ def _read_config_mapping(config_path: Path) -> dict[str, Any]:
     return raw
 
 
+def get_stored_config_value(config_path: Path, key: str) -> Any:
+    """Read ``key`` from the persisted config file, bypassing schema validation.
+
+    ``load_config`` filters the mapping through the pydantic schema, so a key
+    outside that schema is invisible to it even after ``set_config_value``
+    persists it. Reading the raw file lets such a key round-trip.
+
+    This reads the persisted file ONLY and deliberately does not apply
+    environment overrides: ``OPENREVIEW_*`` vars affect only schema-known keys,
+    via ``load_config``. A key set only through the environment is therefore not
+    readable through ``config get`` unless it is a schema key. Layering env over
+    the stored mapping would turn ``config get`` into a generic echo of every
+    ``OPENREVIEW_*`` variable in the process — including secrets the CLI reads
+    directly from the environment (e.g. ``OPENREVIEW_PDF_PASSWORD``).
+    """
+    return _deep_get(_read_config_mapping(config_path), key)
+
+
 def set_config_value(config_path: Path, key: str, value: str) -> dict[str, Any]:
     import shutil
 
@@ -312,11 +330,14 @@ def set_config_value(config_path: Path, key: str, value: str) -> dict[str, Any]:
     _deep_set(raw, key, typed)
 
     validated = _validate_and_merge(raw, dict(DEFAULT_CONFIG))
+    # Layer the validated schema over the original mapping so extra keys
+    # survive the write instead of being silently dropped (issue #125).
+    persisted = _deep_merge(raw, validated)
 
     with open(config_path, "w") as f:
-        yaml.safe_dump(validated, f, default_flow_style=False)
+        yaml.safe_dump(persisted, f, default_flow_style=False)
 
-    return validated
+    return persisted
 
 
 def load_config(config_path: Path) -> dict[str, Any]:

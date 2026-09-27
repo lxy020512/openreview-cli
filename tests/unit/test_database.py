@@ -8,8 +8,10 @@ from openreview_cli.storage.costs import (
     log_cost,
 )
 from openreview_cli.storage.database import (
+    _exec_migration_safely,
     get_connection,
     init_database,
+    iter_sql_statements,
     transaction,
 )
 
@@ -322,3 +324,140 @@ def test_graph_tables_exist_after_init(tmp_path: Path) -> None:
     assert "graph_meta" in names
     assert "graph_nodes" in names
     assert "graph_edges" in names
+
+
+# ── Migration statement splitting (split-on-';' robustness follow-up) ──
+
+
+def test_iter_sql_statements_splits_ordinary_statements() -> None:
+    script = "CREATE TABLE a (x INTEGER);\nINSERT INTO a VALUES (1);\nDROP TABLE a;"
+    assert list(iter_sql_statements(script)) == [
+        "CREATE TABLE a (x INTEGER)",
+        "INSERT INTO a VALUES (1)",
+        "DROP TABLE a",
+    ]
+
+
+def test_iter_sql_statements_keeps_semicolon_inside_a_string_literal() -> None:
+    script = "INSERT INTO a VALUES ('x;y'); INSERT INTO a VALUES ('p'';q');"
+    assert list(iter_sql_statements(script)) == [
+        "INSERT INTO a VALUES ('x;y')",
+        "INSERT INTO a VALUES ('p'';q')",
+    ]
+
+
+def test_iter_sql_statements_keeps_semicolon_inside_a_quoted_identifier() -> None:
+    script = 'SELECT 1 AS "a;b"; SELECT 2 AS "c"";d";'
+    assert list(iter_sql_statements(script)) == [
+        'SELECT 1 AS "a;b"',
+        'SELECT 2 AS "c"";d"',
+    ]
+
+
+def test_iter_sql_statements_keeps_a_trigger_body_together() -> None:
+    script = (
+        "CREATE TRIGGER tr AFTER INSERT ON a BEGIN "
+        "INSERT INTO log VALUES (1); "
+        "INSERT INTO log VALUES (2); "
+        "END; SELECT 1;"
+    )
+    statements = list(iter_sql_statements(script))
+    assert len(statements) == 2
+    assert statements[0].startswith("CREATE TRIGGER tr")
+    assert statements[0].endswith("END")
+    assert statements[0].count(";") == 2
+    assert statements[1] == "SELECT 1"
+
+
+def test_iter_sql_statements_keeps_case_end_inside_a_trigger_body() -> None:
+    script = (
+        "CREATE TRIGGER tr AFTER INSERT ON a BEGIN "
+        "INSERT INTO log VALUES (CASE WHEN NEW.x > 0 THEN 1 ELSE 0 END); "
+        "INSERT INTO log VALUES (2); "
+        "END; SELECT 1;"
+    )
+    statements = list(iter_sql_statements(script))
+    assert len(statements) == 2
+    assert statements[0].startswith("CREATE TRIGGER tr")
+    assert statements[0].endswith("END")
+    assert statements[0].count(";") == 2
+    assert statements[1] == "SELECT 1"
+
+
+def test_iter_sql_statements_keeps_semicolon_inside_a_backtick_identifier() -> None:
+    script = "SELECT `a;b` FROM t; SELECT 1;"
+    assert list(iter_sql_statements(script)) == ["SELECT `a;b` FROM t", "SELECT 1"]
+
+
+def test_iter_sql_statements_keeps_semicolon_inside_a_bracket_identifier() -> None:
+    script = "SELECT [a;b] FROM t; SELECT 1;"
+    assert list(iter_sql_statements(script)) == ["SELECT [a;b] FROM t", "SELECT 1"]
+
+
+def test_iter_sql_statements_ignores_semicolons_in_comments() -> None:
+    script = (
+        "-- a line comment ; that must not split\n"
+        "SELECT 1; /* a block ; comment\n spanning lines */ SELECT 2;"
+    )
+    statements = list(iter_sql_statements(script))
+    assert len(statements) == 2
+    assert statements[0].startswith("-- a line comment ;")
+    assert statements[0].endswith("SELECT 1")
+    assert statements[1].endswith("SELECT 2")
+
+
+def test_iter_sql_statements_yields_a_trailing_statement_without_semicolon() -> None:
+    assert list(iter_sql_statements("SELECT 1; SELECT 2")) == ["SELECT 1", "SELECT 2"]
+    assert list(iter_sql_statements("  \n  ")) == []
+
+
+def _write_migration(tmp_path: Path, body: str) -> Path:
+    sql_file = tmp_path / "900_probe.sql"
+    sql_file.write_text(body, encoding="utf-8")
+    return sql_file
+
+
+def test_exec_migration_runs_a_semicolon_in_a_string_as_one_statement(tmp_path: Path) -> None:
+    conn = get_connection(tmp_path / "probe.db")
+    try:
+        _exec_migration_safely(
+            conn,
+            _write_migration(tmp_path, "CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('a;b');"),
+        )
+        assert conn.execute("SELECT v FROM t").fetchone()[0] == "a;b"
+    finally:
+        conn.close()
+
+
+def test_exec_migration_runs_a_trigger_as_one_statement(tmp_path: Path) -> None:
+    conn = get_connection(tmp_path / "probe.db")
+    try:
+        script = (
+            "CREATE TABLE a (x INTEGER);"
+            "CREATE TABLE log (n INTEGER);"
+            "CREATE TRIGGER tr AFTER INSERT ON a BEGIN "
+            "INSERT INTO log VALUES (1); INSERT INTO log VALUES (2); END;"
+            "INSERT INTO a VALUES (7);"
+        )
+        _exec_migration_safely(conn, _write_migration(tmp_path, script))
+        assert conn.execute("SELECT COUNT(*) FROM log").fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_exec_migration_runs_a_trigger_with_a_case_expression(tmp_path: Path) -> None:
+    conn = get_connection(tmp_path / "probe.db")
+    try:
+        script = (
+            "CREATE TABLE a (x INTEGER);"
+            "CREATE TABLE log (v INTEGER);"
+            "CREATE TRIGGER tr AFTER INSERT ON a BEGIN "
+            "INSERT INTO log VALUES (CASE WHEN NEW.x > 0 THEN 1 ELSE 0 END); "
+            "INSERT INTO log VALUES (99); END;"
+            "INSERT INTO a VALUES (5);"
+        )
+        _exec_migration_safely(conn, _write_migration(tmp_path, script))
+        values = [row[0] for row in conn.execute("SELECT v FROM log ORDER BY v")]
+        assert values == [1, 99]
+    finally:
+        conn.close()

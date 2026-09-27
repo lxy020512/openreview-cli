@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from openreview_cli.pii import mapping as mapping_mod
 from openreview_cli.pii.encryption import InvalidToken
 from openreview_cli.pii.mapping import read_pii_mapping, write_pii_mapping
 
@@ -42,3 +43,37 @@ def test_wrong_key_raises_error(tmp_path: Path) -> None:
 def test_missing_file_raises_file_not_found(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match=r"pii_map\.enc"):
         read_pii_mapping(tmp_path / "nonexistent", _ENCRYPTION_KEY)
+
+
+def test_write_mapping_leaves_no_artifact_or_temp_file_when_replace_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real writer's temp-and-replace leaves nothing behind when rename fails."""
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise OSError("injected os.replace failure")
+
+    monkeypatch.setattr("openreview_cli.pii.mapping.os.replace", _boom)
+
+    with pytest.raises(OSError):
+        write_pii_mapping({"PARTY_A": "ABC Corp."}, tmp_path, _ENCRYPTION_KEY)
+
+    assert not (tmp_path / "pii_map.enc").exists(), "the final artifact survived"
+    assert list(tmp_path.iterdir()) == [], "a temp file survived the failed write"
+
+
+def test_write_mapping_leaves_no_artifact_or_temp_file_when_encryption_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure before the temp file is opened leaves the directory clean."""
+
+    def _boom(*args: object, **kwargs: object) -> bytes:
+        raise RuntimeError("injected encryption failure")
+
+    monkeypatch.setattr(mapping_mod, "encrypt_pii_mapping", _boom)
+
+    with pytest.raises(RuntimeError):
+        write_pii_mapping({"PARTY_A": "ABC Corp."}, tmp_path, _ENCRYPTION_KEY)
+
+    assert not (tmp_path / "pii_map.enc").exists(), "the final artifact survived"
+    assert list(tmp_path.iterdir()) == [], "a temp file survived the failed write"

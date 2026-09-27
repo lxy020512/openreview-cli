@@ -29,3 +29,10 @@ class EmbeddingError(RetrievalError):
 
     Message: "Embedding computation failed for chunk '{chunk_id}': {reason}"
     """
+
+
+class MalformedChunkError(RetrievalError):
+    """A chunk dict is missing a required key.
+
+    Message: "chunk {index} is missing required key '{key}'"
+    """

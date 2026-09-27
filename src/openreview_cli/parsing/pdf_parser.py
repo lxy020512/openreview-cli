@@ -134,7 +134,24 @@ class PdfParser:
             clause_counter = 0
             has_text = False
 
-            for page_num, page in enumerate(doc):
+            page_iter = iter(doc)
+            page_num = 0
+            while True:
+                try:
+                    page = next(page_iter)
+                except StopIteration:
+                    break
+                except Exception:
+                    # pymupdf raises a raw RuntimeError for a document whose page
+                    # tree it refuses to walk (e.g. an absurd /Count), which is a
+                    # corrupt document. Guarding next() is what matters: that is
+                    # where the page-tree walk (and its failure) happens.
+                    raise ParseError(
+                        exit_code=8,
+                        category="corrupt",
+                        message="The file appears to be corrupt or truncated.",
+                        action="Provide a valid PDF file.",
+                    ) from None
                 try:
                     page_text = extract_page_text(page)
                 except Exception:
@@ -156,6 +173,7 @@ class PdfParser:
                         if clause.id:
                             clause_counter += 1
                         yield clause
+                page_num += 1
 
             if not has_text:
                 raise ParseError(

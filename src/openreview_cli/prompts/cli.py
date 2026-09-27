@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from openreview_cli.config.paths import get_data_dir
+from openreview_cli.errors import usage_error
 from openreview_cli.prompts.io import parse_prompts_yaml
 from openreview_cli.prompts.store import PromptStore
 
@@ -114,9 +115,11 @@ def prompt_show(
         None, "--version", help="Specific version (default: latest)"
     ),
 ) -> None:
+    if version is not None and version < 1:
+        usage_error(f"Invalid version {version}: versions start at 1")
     store = _get_store()
     try:
-        pv = store.get(name, version) if version else store.get_latest(name)
+        pv = store.get(name, version) if version is not None else store.get_latest(name)
     except ValueError as e:
         _exit(1, str(e))
         return

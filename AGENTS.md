@@ -2,6 +2,8 @@
 
 Command Code instructions for `openreview`. Read this before touching anything in the repo. (Legacy OpenCode config artifacts remain in place: `opencode.json`, `.opencode/`, and the `.tools/ponytail` submodule.)
 
+**STOP — before doing anything else for any task-shaped request:** read `## Orchestrator` below and follow it. Your first line of output must state your Size gate classification, your routing, and which skill commands you're committing to run at each stage — see "Required checkpoint" under Orchestrator. This applies even to requests that look small. Do not silently skip to editing files.
+
 ## Status
 
 Python 3.12 project, pre-alpha but far along: document parsing (PDF/DOCX/clause detection), PII stripping (Presidio, encrypted mapping), AI Gateway (routing, cost tracking, registry, wizard, redaction), review pipeline (extraction → QA → comparison, memo generation, 24 bundled playbooks), chunking/retrieval/grounding/negotiation/bilateral/recovery/graph/benchmark modules, a Textual TUI, and a Typer CLI with 40 top-level subcommands (`parse`, `chunk`, `ingest`, `retrieve`, `index-status`, `index-clear`, `negotiate`, `export`, `precheck`, `gateway`, `playbook`, `pii`, `client`, `config`, `graph`, `benchmark`, `prompt`, plus 23 product-mode review commands such as `licensecheck`, `leasecheck`, `privacycheck`, `dealcheck`, `hirecheck`).
@@ -275,6 +277,16 @@ Repo `openreview` · PyPI `openreview-cli` · CLI `openreview` · import `openre
   always routes to a second, independently-dispatched sub-agent before
   being treated as done.
 
+### Required checkpoint (every request, before any other action)
+The Lead's first line of output for any task-shaped request must state,
+in this order: the Size gate classification, the routing that follows
+from it, and the exact skill commands committing to run at each stage
+(e.g. `/ponytail-audit`, `/caveman-review`, `/impeccable audit`), not a
+description of applying them "ambiently." This makes non-compliance
+visible on the first line instead of three edits in. If a named command
+turns out to do nothing (see the host-support notes under Skill scoping),
+say so plainly rather than silently dropping it next time.
+
 ### Size gate (Lead classifies, no sub-agent needed)
 - **Small**: fits in one 2-5 minute unit, no real design decision, touches
   one file or a tightly related few → skip to: fresh sub-agent implements
@@ -284,14 +296,14 @@ Repo `openreview` · PyPI `openreview-cli` · CLI `openreview` · import `openre
 
 ### Full pipeline (big tasks), each stage its own fresh sub-agent
 1. **Brainstorm** — explores alternatives, produces a design doc, writes
-   no code. If the task touches a TUI screen or flow, use impeccable's
-   `shape`/`critique` here to think through the UX before code gets
-   written.
+   no code. If the task touches a TUI screen or flow, use
+   `/impeccable shape` / `/impeccable critique` here to think through
+   the UX before code gets written.
 2. **Worktree** — isolated git worktree for the work (local-only, no
    approval needed, doesn't push).
 3. **Plan** — breaks the design into tasks (2-5 min each), exact file
    paths, verification steps.
-   - Review the plan: `caveman-review` (terse pass) + `ponytail-audit`
+   - Review the plan: `/caveman-review` (terse pass) + `/ponytail-audit`
      (over-engineering). Flagged items go back to the plan sub-agent,
      reject-and-redo loop.
 4. **Subagent-driven development** — one fresh sub-agent per task; a
@@ -303,10 +315,11 @@ Repo `openreview` · PyPI `openreview-cli` · CLI `openreview` · import `openre
 5. **TDD** — failing test first, minimal code, refactor, inside each
    task. Code written before its test gets deleted, not just flagged.
 6. **Code review** — fresh sub-agent reviews finished work:
-   `caveman-review` (quality pass) + `ponytail-audit` (over-engineering),
+   `/caveman-review` (quality pass) + `/ponytail-audit` (over-engineering),
    both expanded to full Review Mode (Issue/Evidence/Why it
    fails/Exact fix) before reaching the Lead's report. For TUI work,
-   also a deliberate impeccable pass (`audit`, `polish`, `harden`, etc.).
+   also a deliberate `/impeccable audit`, `/impeccable polish`,
+   `/impeccable harden` pass, etc.
 
 ### Lead does final QC, then reports (see "Talking to the human")
 
@@ -316,19 +329,39 @@ Sub-agent-to-sub-agent communication uses caveman (terse). Final report
 to the human is always expanded to full format, never caveman-speak.
 
 ### Skill scoping
-- **caveman**: commit messages (`/caveman-commit`), sub-agent-to-sub-agent
-  chatter, internal review notes. Never the Lead's final report.
-- **ponytail**: `-audit` on plans and finished code, for over-engineering.
-- **impeccable**: applies as ambient guidance for any UI/UX decision, not
-  just code edits — during Brainstorm or Plan (`shape`/`critique` before
-  code gets written), during implementation (anti-pattern rules applied
-  while building), and as a deliberate pass afterward (`audit`, `polish`,
-  `harden`, etc.). `init`/`document` never run again without explicit
-  approval — they regenerate PRODUCT.md/DESIGN.md, which already exist
-  and are deliberate. Not officially listed as a supported tool for
-  Command Code (unlike ponytail/caveman) — verify the automatic edit
-  hook actually fires before relying on it; if it doesn't, apply the
-  guidance as instruction only.
+Verified against each project's own README, not assumed:
+
+- **caveman**: commit messages (`/caveman-commit`), review passes
+  (`/caveman-review`), sub-agent-to-sub-agent chatter, internal review
+  notes. Never the Lead's final report. Distributed as a generic
+  30+-agent skill (`npx skills add`), so it's the least likely of the
+  three to be dead weight in Command Code — no host exclusion list found.
+- **ponytail**: `/ponytail-audit` on plans and finished code, for
+  over-engineering; `/ponytail-review` on a diff; `/ponytail-debt` /
+  `/ponytail-gain` for the deferred-work ledger and impact scoreboard.
+  Caveat: ponytail's own docs say these slash commands need "a
+  skill-capable host" and name a specific list (Claude Code, Codex,
+  Devin CLI, OpenCode, Gemini, pi, Swival, Hermes Agent, Qoder, Grok
+  Build) — Command Code is not on it. The always-on ruleset is
+  confirmed loaded (via `~/.agents/skills`, per the earlier audit), so
+  the guidance itself applies either way, but the named commands may
+  not fire as real actions. Name them in the checkpoint anyway; if one
+  visibly does nothing, that's useful information, not a reason to stop
+  naming it.
+- **impeccable**: applies via `/impeccable <command>` for any UI/UX
+  decision, not just code edits — `/impeccable shape` / `/impeccable
+  critique` during Brainstorm or Plan (before code gets written),
+  ambient anti-pattern rules during implementation, and a deliberate
+  pass afterward (`/impeccable audit`, `/impeccable polish`,
+  `/impeccable harden`, etc.). `/impeccable init` / `/impeccable
+  document` never run again without explicit approval — they regenerate
+  PRODUCT.md/DESIGN.md, which already exist and are deliberate. Command
+  Code is not in impeccable's official "Supported Tools" list (Cursor,
+  Claude Code, GitHub Copilot, Codex, Gemini CLI, Grok Build, and others
+  — see the project's README) or its design-hook install list, so
+  neither the automatic edit-detector hook nor the slash commands are
+  confirmed to work here. Apply the guidance as instruction only unless
+  a command is confirmed to actually respond.
 - **superpowers**: the pipeline skeleton above, enriched with the rules
   already in this file (worker/verifier, TDD, gh approval gate, CI via
   draft PR, issue filing).

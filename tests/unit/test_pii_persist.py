@@ -12,12 +12,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 from openreview_cli.pii.cache import PiiCache
+from openreview_cli.pii.mapping import read_pii_mapping
 from openreview_cli.pii.models import PiiEntity, PiiResult
 from openreview_cli.pii.persist import (
     persist_pii_for_document,
@@ -226,6 +228,95 @@ def test_persist_pii_result_stores_the_filename(tmp_path: Path) -> None:
     cache_row = PiiCache(db).get("h" * 64)
     assert cache_row is not None
     assert cache_row["filename"] == "Acme_NDA_v3.pdf"
+
+
+def test_persist_pii_result_preserves_a_prior_mapping_when_a_rewrite_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed re-write must not destroy or orphan the prior complete mapping.
+
+    On a re-write the real atomic writer leaves the PRIOR COMPLETE ``pii_map.enc``
+    in place when its ``os.replace`` fails.  The rollback must therefore NOT unlink
+    it (and must not leave the ``pii_cache`` row dangling), while it may only
+    remove an artifact it itself created on a first write.
+    """
+    db = tmp_path / "t.db"
+    init_database(db)
+    review_dir = tmp_path / "reviews" / ("h" * 12)
+    encryption_key = "test-key-1234567890123456"
+    mapping = {"PARTY_A": "Acme", "PERSON_1": "Jane"}
+
+    # First (successful) persist: the mapping + the pii_cache row now exist.
+    persist_pii_result(
+        db,
+        document_hash="h" * 64,
+        config_hash="cfg-hash",
+        pii_result=_result_with_mapping(),
+        review_dir=review_dir,
+        encryption_key=encryption_key,
+    )
+    mapping_path = review_dir / "pii_map.enc"
+    assert mapping_path.exists()
+    assert PiiCache(db).get("h" * 64) is not None
+    assert read_pii_mapping(review_dir, encryption_key) == mapping
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise OSError("injected os.replace failure")
+
+    monkeypatch.setattr(os, "replace", _boom)
+    with pytest.raises(OSError):
+        persist_pii_result(
+            db,
+            document_hash="h" * 64,
+            config_hash="cfg-hash",
+            pii_result=_result_with_mapping(),
+            review_dir=review_dir,
+            encryption_key=encryption_key,
+        )
+
+    # The prior complete mapping survived, intact (0600) and still decryptable.
+    assert mapping_path.exists(), "the prior complete mapping was destroyed"
+    assert mapping_path.stat().st_mode & 0o777 == 0o600
+    assert read_pii_mapping(review_dir, encryption_key) == mapping
+    # ...and its cache row still points at a file that exists (not dangling).
+    cache_row = PiiCache(db).get("h" * 64)
+    assert cache_row is not None
+    assert Path(cache_row["mapping_path"]).exists()
+    assert list(review_dir.glob(".pii_map.enc.*.tmp")) == [], "a temp file survived"
+
+
+def test_persist_pii_result_failure_never_deletes_a_legacy_audit_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rollback removes only the mapping artifact, never a legacy audit file.
+
+    ``delete_pii_mapping`` owns both ``pii_map.enc`` and the legacy
+    ``pii_audit.json``; the ``persist_pii_result`` rollback must not reach for it,
+    or a failed strip would destroy an artifact it never wrote.
+    """
+    db = tmp_path / "t.db"
+    init_database(db)
+    review_dir = tmp_path / "reviews" / ("h" * 12)
+    review_dir.mkdir(parents=True)
+    legacy = review_dir / "pii_audit.json"
+    legacy.write_text("{}", encoding="utf-8")
+
+    def _boom(mapping: dict[str, str], review_dir: Path, encryption_key: str) -> Path:
+        raise OSError("injected mapping write failure")
+
+    monkeypatch.setattr("openreview_cli.pii.persist.write_pii_mapping", _boom)
+
+    with pytest.raises(OSError):
+        persist_pii_result(
+            db,
+            document_hash="h" * 64,
+            config_hash="cfg-hash",
+            pii_result=_result_with_mapping(),
+            review_dir=review_dir,
+            encryption_key="test-key-1234567890123456",
+        )
+
+    assert legacy.exists(), "the rollback deleted the legacy pii_audit.json"
 
 
 def test_persist_pii_for_document_stores_the_source_basename(

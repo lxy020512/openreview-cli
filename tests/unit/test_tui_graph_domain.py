@@ -45,15 +45,15 @@ def test_missing_path_raises_file_not_found(tmp_path: Path) -> None:
         graph_summary_via_tui(tmp_path / "gone.pdf")
 
 
-def test_directory_named_pdf_raises_oserror_not_parse_error(tmp_path: Path) -> None:
+def test_directory_named_pdf_raises_parse_error(tmp_path: Path) -> None:
+    """A directory named ``*.pdf`` is rejected as empty, not with IsADirectoryError."""
     directory = tmp_path / "contract.pdf"
     directory.mkdir()
 
-    with pytest.raises(OSError) as excinfo:
+    with pytest.raises(ParseError) as excinfo:
         graph_summary_via_tui(directory)
 
-    assert isinstance(excinfo.value, IsADirectoryError)
-    assert not isinstance(excinfo.value, ParseError)
+    assert excinfo.value.category == ParseErrorCategory.empty
 
 
 def test_unsupported_format_raises_parse_error(tmp_path: Path) -> None:

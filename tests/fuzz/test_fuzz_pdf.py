@@ -15,8 +15,8 @@ trailing junk past ``%%EOF``, a renamed DOCX, a huge claimed page count, a
 vector-only no-text page, garbage that passes the EOF gate) rather than
 re-asserting those.
 
-Known-broken behaviour (plan section 3 sharp edges 1-4) is asserted as the
-CORRECT behaviour and carries ``xfail(strict=True)`` tied to a register row.
+The plan section 3 sharp edges are asserted as the CORRECT behaviour and now
+pass outright.
 """
 
 from __future__ import annotations
@@ -125,50 +125,50 @@ def test_pdf_valid_document_succeeds_and_reaches_pymupdf(tmp_path: Path) -> None
     _probe.assert_library_reached(counters)
 
 
-# ── Sharp edges 1, 2 and 4: assert the CORRECT behaviour, xfail until fixed ──
+# ── Sharp edges 1, 2 and 4: the CORRECT behaviour ───────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-010: a directory named *.pdf escapes as an uncaught IsADirectoryError",
-)
-def test_pdf_directory_named_pdf_is_a_clean_parse_error(tmp_path: Path) -> None:
-    outcome, counters = _run(corpus_docs.empty_dir_as_pdf, tmp_path)
+@pytest.mark.parametrize("entry", ["stream_clauses", "parse_document"])
+def test_pdf_directory_named_pdf_is_a_clean_parse_error(entry: str, tmp_path: Path) -> None:
+    outcome, counters = _run(corpus_docs.empty_dir_as_pdf, tmp_path, entry)
     _probe.assert_route_reached(counters)
     _probe.assert_categorical(outcome)
+    # A directory named ``*.pdf`` is not a regular file, so ``_parser_for``
+    # rejects it via ``_empty_error`` (category ``empty``), never IsADirectoryError.
+    assert not outcome.ok, f"a directory must not parse, got clause_count={outcome.clause_count}"
+    assert outcome.category == "empty"
 
 
 @pytest.mark.skipif(_IS_ROOT, reason="directory permissions do not deny reads to root")
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-010: an unreadable *.pdf escapes as an uncaught PermissionError",
-)
-def test_pdf_unreadable_is_a_clean_parse_error(tmp_path: Path) -> None:
-    outcome, counters = _run(corpus_docs.unreadable_pdf, tmp_path)
+@pytest.mark.parametrize("entry", ["stream_clauses", "parse_document"])
+def test_pdf_unreadable_is_a_clean_parse_error(entry: str, tmp_path: Path) -> None:
+    outcome, counters = _run(corpus_docs.unreadable_pdf, tmp_path, entry)
     _probe.assert_route_reached(counters)
     _probe.assert_categorical(outcome)
+    # A PermissionError while stat-ing/reading is reported like an empty file.
+    assert not outcome.ok, f"an unreadable file must not parse, got {outcome.category!r}"
+    assert outcome.category == "empty"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-011: a valid PDF with more than 10 bytes of trailing junk is rejected as corrupt",
-)
-def test_pdf_trailing_junk_after_eof_is_accepted(tmp_path: Path) -> None:
-    outcome, counters = _run(corpus_docs.pdf_with_trailing_junk, tmp_path)
+@pytest.mark.parametrize("entry", ["stream_clauses", "parse_document"])
+def test_pdf_trailing_junk_after_eof_is_accepted(entry: str, tmp_path: Path) -> None:
+    outcome, counters = _run(corpus_docs.pdf_with_trailing_junk, tmp_path, entry)
     _probe.assert_route_reached(counters)
     _probe.assert_categorical(outcome)
-    assert outcome.ok, "a valid PDF with trailing junk must parse, not be rejected as corrupt"
+    assert outcome.ok is True, (
+        "a valid PDF with trailing junk must parse, not be rejected as corrupt"
+    )
     _probe.assert_library_reached(counters)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-013: an enormous claimed page count escapes as an uncaught RuntimeError",
-)
-def test_pdf_huge_page_count_is_a_clean_parse_error(tmp_path: Path) -> None:
-    outcome, counters = _run(corpus_docs.huge_page_count_pdf, tmp_path)
+@pytest.mark.parametrize("entry", ["stream_clauses", "parse_document"])
+def test_pdf_huge_page_count_is_a_clean_parse_error(entry: str, tmp_path: Path) -> None:
+    outcome, counters = _run(corpus_docs.huge_page_count_pdf, tmp_path, entry)
     _probe.assert_route_reached(counters)
     _probe.assert_categorical(outcome)
+    # The page tree claims 100_000_000 pages; the parse boundary rejects it as corrupt.
+    assert not outcome.ok, f"an impossible page count must not parse, got {outcome.category!r}"
+    assert outcome.category == "corrupt"
 
 
 # ── Property-based fuzzing: one bytes strategy per parser entry point ───────

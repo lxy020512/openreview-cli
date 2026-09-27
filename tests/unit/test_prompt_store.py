@@ -19,6 +19,64 @@ def store(db_path: Path) -> PromptStore:
     return s
 
 
+def test_init_is_idempotent_and_never_writes_user_version(db_path: Path) -> None:
+    import sqlite3
+
+    PromptStore(db_path).init()
+    PromptStore(db_path).init()
+    conn = sqlite3.connect(str(db_path))
+    try:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert {"prompt_versions", "prompt_bindings"} <= tables
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_init_only_drops_the_pragma_user_version_statement(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A statement that merely *mentions* ``user_version`` must still run.
+
+    ``init()`` used to drop every statement containing the substring
+    ``user_version``, which would silently skip a future migration statement
+    that mentions it outside the pragma (a comment, a column default). Only the
+    real ``PRAGMA USER_VERSION`` statement may be filtered out (see #124: the
+    pragma must never be executed, so the schema version is not rewound).
+    """
+    import sqlite3
+
+    probe_migration = (
+        "-- probe: this comment mentions user_version but is not the pragma\n"
+        "CREATE TABLE IF NOT EXISTS probe_comment (id INTEGER PRIMARY KEY);\n"
+        "CREATE TABLE IF NOT EXISTS probe_default (\n"
+        "    label TEXT NOT NULL DEFAULT 'user_version'\n"
+        ");\n"
+        "PRAGMA user_version = 4;\n"
+    )
+    real_read_text = Path.read_text
+
+    def fake_read_text(self: Path, encoding: str | None = None, errors: str | None = None) -> str:
+        if self.name == "004_prompts.sql":
+            return probe_migration
+        return real_read_text(self, encoding, errors)
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+    PromptStore(db_path).init()
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert {"probe_comment", "probe_default"} <= tables
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 class TestPromptStore:
     def test_create_version_1(self, store: PromptStore) -> None:
         pv = store.create("test", "Hello")
