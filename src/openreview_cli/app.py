@@ -22,7 +22,7 @@ from openreview_cli.config.loader import (
 )
 from openreview_cli.config.paths import get_config_dir, get_data_dir, get_log_dir
 from openreview_cli.errors import EXIT_USAGE, EXIT_USER_ERROR, config_error, fail, usage_error
-from openreview_cli.gateway.redaction import install_on_root_handlers
+from openreview_cli.gateway.redaction import install_on_root_handlers, redact_text
 from openreview_cli.product_modes import PRODUCT_MODES as _PRODUCT_MODE_SPECS
 from openreview_cli.storage.clients import (
     add_client,
@@ -1699,7 +1699,7 @@ def gateway_test(slot: str) -> None:
             )
             typer.echo(f"Response: {response}")
     except Exception as e:
-        typer.echo(f"Error: {e}", err=True)
+        typer.echo(f"Error: {redact_text(str(e))}", err=True)
         raise typer.Exit(code=1) from None
 
 

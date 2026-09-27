@@ -614,7 +614,15 @@ def streaming_gateway(monkeypatch: Any, tmp_path: Path, server: LocalSSEServer) 
 
     state = prepare_state(monkeypatch, tmp_path, tier="maximum", primary="openai/test-model")
     gw = Gateway.__new__(Gateway)
-    gw._config = {"gateway": {"models": {"extraction": {"primary": "openai/test-model"}}}}
+    gw._config = {
+        "gateway": {
+            "models": {"extraction": {"primary": "openai/test-model"}},
+            # Harness, not product: the real config carries this block, but the
+            # hand-built dict above did not, so the provider_down stream case would
+            # sleep the default retry_delay (1.0 s) on every retry.
+            "fallback": {"retries": 2, "retry_delay": 0.0, "timeout": 5},
+        }
+    }
     gw._data_path = state.db_path
     gw._cloud_calls_made = 0
     gw._cost_tracker = CostTracker(state.db_path)

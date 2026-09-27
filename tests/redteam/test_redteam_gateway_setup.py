@@ -248,7 +248,6 @@ def test_gateway_test_against_a_down_provider_is_a_clean_error_and_prints_no_key
     assert canary_hits(captured) == {}, f"key material on surface(s): {canary_hits(captured)}"
 
 
-@pytest.mark.xfail(strict=True, reason="RT-034")
 def test_gateway_test_does_not_echo_key_material_from_a_provider_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

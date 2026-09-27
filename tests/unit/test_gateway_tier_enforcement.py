@@ -119,7 +119,7 @@ class TestMaximumTierEnforcement:
             gw, "_get_litellm_kwargs", lambda slot: {"model": "ollama/nomic-embed-text"}
         )
 
-        def _fake_fallback(slot: str, call_fn: Any, call_kwargs: dict[str, Any]) -> Any:
+        def _fake_fallback(slot: str, call_fn: Any, call_kwargs: dict[str, Any], **_kw: Any) -> Any:
             return SimpleNamespace(data=[{"embedding": [0.1, 0.2]}])
 
         monkeypatch.setattr(gw, "_call_with_fallback", _fake_fallback)
@@ -177,7 +177,7 @@ class TestPerformanceTierEnforcement:
             gw, "_get_litellm_kwargs", lambda slot: {"model": "openai/text-embedding-3-small"}
         )
 
-        def _fake_fallback(slot: str, call_fn: Any, call_kwargs: dict[str, Any]) -> Any:
+        def _fake_fallback(slot: str, call_fn: Any, call_kwargs: dict[str, Any], **_kw: Any) -> Any:
             return SimpleNamespace(data=[{"embedding": [0.1, 0.2]}])
 
         monkeypatch.setattr(gw, "_call_with_fallback", _fake_fallback)
@@ -379,7 +379,7 @@ class TestR35RecoveryTierBypass:
         # Real assertion: dispatch MUST be reached, with model=openai/gpt-4.
         captured: dict[str, Any] = {}
 
-        def _capture_call(slot: str, call_fn: Any, call_kwargs: dict[str, Any]) -> Any:
+        def _capture_call(slot: str, call_fn: Any, call_kwargs: dict[str, Any], **_kw: Any) -> Any:
             captured["model"] = call_kwargs.get("model")
             return _chat_response("ok")
 
@@ -447,7 +447,7 @@ class TestR35RecoveryTierBypass:
 
         captured: dict[str, Any] = {}
 
-        def _capture(slot: str, call_fn: Any, call_kwargs: dict[str, Any]) -> Any:
+        def _capture(slot: str, call_fn: Any, call_kwargs: dict[str, Any], **_kw: Any) -> Any:
             captured["model"] = call_kwargs.get("model")
             return _chat_response("ok")
 
@@ -593,7 +593,7 @@ class TestR35RecoveryTierBypass:
             # case where the primary is local).
             captured: dict[str, Any] = {}
 
-            def _capture(slot: str, call_fn: Any, call_kwargs: dict[str, Any]) -> Any:
+            def _capture(slot: str, call_fn: Any, call_kwargs: dict[str, Any], **_kw: Any) -> Any:
                 captured["model"] = call_kwargs.get("model")
                 return _chat_response("ok")
 
@@ -746,7 +746,11 @@ class TestR35RecoveryTierBypass:
         monkeypatch.setattr(
             "openreview_cli.prompts.store.PromptStore", MagicMock(resolve=lambda slot: None)
         )
-        monkeypatch.setattr(gw, "_call_with_fallback", lambda *a, **k: _chat_response("ok"))
+        # The counter now lives inside the real _call_with_fallback, so patch the
+        # dispatch seam rather than the seam itself.
+        monkeypatch.setattr(
+            "openreview_cli.gateway.router.completion", lambda **kw: _chat_response("ok")
+        )
 
         # Pre-fix, _record_cloud_call would read the slot primary (local) and
         # report 0 cloud calls even though we actually dispatched a cloud

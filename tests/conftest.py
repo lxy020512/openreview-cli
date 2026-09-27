@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import logging
+import sys
 import threading
 import tracemalloc
 from collections.abc import Generator
@@ -216,6 +217,22 @@ def _tracemalloc_state_isolation(request: pytest.FixtureRequest) -> Generator[No
             tracemalloc.start()
     elif tracemalloc.is_tracing():
         tracemalloc.stop()
+
+
+@pytest.fixture(autouse=True)
+def _clear_gateway_seeded_env_vars() -> Generator[None, None, None]:
+    """A real Gateway() seeds provider keys into os.environ; never leak them across tests.
+
+    ``Gateway._set_env_vars`` writes each resolved credential into ``os.environ``
+    and only removes it when the instance is explicitly cleared, so a test that
+    constructs a real Gateway would otherwise hand its keys to every test after
+    it. The module lookup is guarded: tests that never touched the gateway must
+    not pay the litellm import that ``openreview_cli.gateway.router`` triggers.
+    """
+    yield
+    router_mod = sys.modules.get("openreview_cli.gateway.router")
+    if router_mod is not None:
+        router_mod.clear_seeded_env_vars()
 
 
 @pytest.fixture

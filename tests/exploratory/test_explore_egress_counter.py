@@ -368,18 +368,20 @@ def test_record_cloud_call_classifies_local_vs_cloud_slots() -> None:
     gateway._record_cloud_call("extraction")
     assert gateway._cloud_calls_made == 2
 
-    # Unclassifiable provider (not local, no base_url) -> not counted as cloud.
+    # Unclassifiable provider (not local, no base_url) -> counted as cloud (fail closed).
     unclassifiable = ProviderInfo(name="bedrock", is_local=False, base_url=None)
     gateway._resolve_provider_info = lambda slot: unclassifiable  # type: ignore[method-assign]
     gateway._record_cloud_call("extraction")
-    assert gateway._cloud_calls_made == 2, "resolution error must not coerce to cloud"
+    assert gateway._cloud_calls_made == 3, (
+        "an unclassifiable provider now resolves as cloud, the same verdict the tier gate reaches"
+    )
 
     # A recovery-driven model override: unknown prefix -> fail closed to cloud.
     gateway._record_cloud_call("extraction", provider_prefix="mystery-provider")
-    assert gateway._cloud_calls_made == 3, "unknown override counts as cloud"
+    assert gateway._cloud_calls_made == 4, "unknown override counts as cloud"
 
     # A known local override prefix is not counted.
     gateway._record_cloud_call("extraction", provider_prefix="ollama")
-    assert gateway._cloud_calls_made == 3
+    assert gateway._cloud_calls_made == 4
 
     models.reset_total_cloud_calls()

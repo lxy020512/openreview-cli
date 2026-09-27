@@ -56,6 +56,12 @@ class _MockRerankResponse:
         self.results = results
 
 
+class _UnauthorizedError(Exception):
+    """An injected 401: permanent, so the retry loop must not repeat it (#154)."""
+
+    status_code = 401
+
+
 def _gateway(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_text: str, auth_text: str | None = None
 ) -> Gateway:
@@ -183,6 +189,111 @@ gateway:
         assert result == "from fallback"
         assert call_log[-1] == "anthropic/claude-3"
 
+    def test_fallback_dispatch_carries_the_fallback_providers_api_base_and_drops_the_primarys_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#144/D2: the fallback dispatch is retargeted to its own provider.
+
+        The primary is a ``source="custom"`` provider, so ``_get_litellm_kwargs``
+        injects an explicit ``api_key``; litellm honours that over the provider
+        env var, so leaving it in the reused ``call_kwargs`` would send the
+        primary's credential to the fallback provider's host. The anchor is only
+        meaningful with a custom primary — with a bundled primary the pop is
+        behaviourally inert.
+        """
+        import openreview_cli.gateway.router as router_mod
+
+        registry = {
+            "openai": ProviderInfo(
+                name="openai",
+                env_key="OPENAI_API_KEY",
+                base_url="https://api.openai.com/v1",
+                source="custom",
+                is_local=False,
+                capabilities=Capability(reasoning=True),
+            ),
+            "anthropic": ProviderInfo(
+                name="anthropic",
+                env_key="ANTHROPIC_API_KEY",
+                base_url="https://api.anthropic.com/v1",
+                is_local=False,
+                capabilities=Capability(reasoning=True),
+            ),
+        }
+        monkeypatch.setattr(router_mod, "load_registry", lambda: registry)
+
+        seen: list[dict[str, Any]] = []
+
+        def recording_completion(**kw: Any) -> _MockCompletionResponse:
+            seen.append(
+                {
+                    "model": kw["model"],
+                    "api_base": kw.get("api_base"),
+                    "api_key": kw.get("api_key"),
+                }
+            )
+            if len(seen) <= 3:
+                msg = "primary failed"
+                raise RuntimeError(msg)
+            return _MockCompletionResponse("from fallback")
+
+        monkeypatch.setattr(router_mod, "completion", recording_completion)
+        gw = _gateway(tmp_path, monkeypatch, COMMON_CONFIG)
+        result = gw.chat("reasoning", [{"role": "user", "content": "Hi"}])
+
+        assert result == "from fallback"
+        assert seen[0]["api_key"] == "sk-test"
+        assert seen[0]["api_base"] == "https://api.openai.com/v1"
+        assert seen[-1]["model"] == "anthropic/claude-3"
+        assert seen[-1]["api_base"] == "https://api.anthropic.com/v1"
+        assert seen[-1]["api_key"] is None
+
+    def test_a_fallback_failure_names_the_fallback_provider(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failure of the fallback dispatch is classified under the fallback's prefix.
+
+        ``_classify_error`` stamps the provider name into the message, so
+        classifying this failure under the primary's prefix would name a provider
+        that never carried the failing request.
+        """
+        import openreview_cli.gateway.router as router_mod
+
+        registry = {
+            "openai": ProviderInfo(
+                name="openai",
+                env_key="OPENAI_API_KEY",
+                base_url="https://api.openai.com/v1",
+                source="custom",
+                is_local=False,
+                capabilities=Capability(reasoning=True),
+            ),
+            "anthropic": ProviderInfo(
+                name="anthropic",
+                env_key="ANTHROPIC_API_KEY",
+                base_url="https://api.anthropic.com/v1",
+                is_local=False,
+                capabilities=Capability(reasoning=True),
+            ),
+        }
+        monkeypatch.setattr(router_mod, "load_registry", lambda: registry)
+
+        dispatched: list[str] = []
+
+        def always_down(**kw: Any) -> Any:
+            dispatched.append(kw["model"])
+            raise RuntimeError("provider down")
+
+        monkeypatch.setattr(router_mod, "completion", always_down)
+        gw = _gateway(tmp_path, monkeypatch, COMMON_CONFIG)
+
+        with pytest.raises(UnclassifiedProviderError) as exc_info:
+            gw.chat("reasoning", [{"role": "user", "content": "Hi"}])
+
+        assert dispatched[-1] == "anthropic/claude-3", dispatched
+        assert "[anthropic]" in str(exc_info.value), str(exc_info.value)
+        assert "[openai]" not in str(exc_info.value), str(exc_info.value)
+
     def test_raises_all_providers_failed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -214,6 +325,84 @@ gateway:
         assert isinstance(result, UnclassifiedProviderError)
         assert not isinstance(result, AllProvidersFailedError)
 
+    def test_each_attempt_is_counted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """#143: every attempt inside the retry loop earns one counter increment."""
+        import openreview_cli.gateway.router as router_mod
+
+        calls: list[str] = []
+
+        def _fail_twice_then_ok(**kw: Any) -> _MockCompletionResponse:
+            calls.append(kw["model"])
+            if len(calls) <= 2:
+                raise RuntimeError("transient")
+            return _MockCompletionResponse("ok")
+
+        monkeypatch.setattr(router_mod, "completion", _fail_twice_then_ok)
+        gw = _gateway(tmp_path, monkeypatch, COMMON_CONFIG)
+
+        assert gw.chat("reasoning", [{"role": "user", "content": "Hi"}]) == "ok"
+
+        assert len(calls) == 3, "the retry loop did not dispatch three times"
+        assert gw._cloud_calls_made == 3, "every dispatch attempt must be counted"
+
+    @pytest.mark.parametrize("shape", ["none", "empty_choices", "no_message"])
+    def test_a_reply_with_no_usable_choice_is_a_typed_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: str
+    ) -> None:
+        """#149/#150: a reply the caller can never read is a typed error, not a crash.
+
+        ``None``, ``choices == []`` and a choice with no ``message`` all map to the
+        same ``UnclassifiedProviderError`` naming the provider, validated BEFORE the
+        cost row so no ``cost_logs`` row is written. The dispatch is still counted
+        (#147/C2).
+        """
+        import types as _types
+
+        import openreview_cli.gateway.router as router_mod
+
+        replies: dict[str, Any] = {
+            "none": None,
+            "empty_choices": _types.SimpleNamespace(choices=[]),
+            "no_message": _types.SimpleNamespace(choices=[_types.SimpleNamespace(message=None)]),
+        }
+        monkeypatch.setattr(router_mod, "completion", lambda **kw: replies[shape])
+        gw = _gateway(tmp_path, monkeypatch, COMMON_CONFIG)
+        log_call = MagicMock()
+        monkeypatch.setattr(gw._cost_tracker, "log_call", log_call)
+
+        with pytest.raises(UnclassifiedProviderError) as exc_info:
+            gw.chat("extraction", [{"role": "user", "content": "Hi"}])
+
+        assert "openai" in str(exc_info.value)
+        assert gw._cloud_calls_made == 1
+        log_call.assert_not_called()
+
+    def test_a_permanent_error_is_dispatched_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#154: an auth failure is dispatched once, not ``retries + 1`` times.
+
+        The socket-free anchor: the ``extraction`` slot has no fallback (the
+        ``reasoning`` slot does, so C6 keeps one fallback dispatch available and it
+        would give 2), so a permanent class short-circuits the retry loop after the
+        single counted attempt.
+        """
+        import openreview_cli.gateway.router as router_mod
+
+        calls: list[str] = []
+
+        def always_unauthorized(**kw: Any) -> Any:
+            calls.append(kw["model"])
+            raise _UnauthorizedError("unauthorized")
+
+        monkeypatch.setattr(router_mod, "completion", always_unauthorized)
+        gw = _gateway(tmp_path, monkeypatch, COMMON_CONFIG)
+
+        with pytest.raises(AuthError):
+            gw.chat("extraction", [{"role": "user", "content": "Hi"}])
+
+        assert len(calls) == 1, f"a permanent error was dispatched {len(calls)} times"
+
 
 class TestEmbed:
     def test_returns_vectors(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -240,7 +429,9 @@ class TestEmbed:
 
         gw = _gateway(tmp_path, monkeypatch, COMMON_CONFIG)
 
-        def _fake_fallback(slot: str, call_fn: object, call_kwargs: dict[str, object]) -> object:
+        def _fake_fallback(
+            slot: str, call_fn: object, call_kwargs: dict[str, object], **_kw: Any
+        ) -> object:
             return _MockEmbeddingResponse([{"embedding": [0.1, 0.2, 0.3]}])
 
         monkeypatch.setattr(gw, "_call_with_fallback", _fake_fallback)
@@ -832,7 +1023,7 @@ def test_strip_in_chat_path_integrates(monkeypatch: pytest.MonkeyPatch) -> None:
 
     captured: dict[str, Any] = {}
 
-    def _fake_fallback(slot: str, call_fn: Any, call_kwargs: dict[str, Any]) -> Any:
+    def _fake_fallback(slot: str, call_fn: Any, call_kwargs: dict[str, Any], **_kw: Any) -> Any:
         captured["messages"] = call_kwargs["messages"]
         return _types.SimpleNamespace(
             choices=[_types.SimpleNamespace(message=_types.SimpleNamespace(content="ok"))]
@@ -910,7 +1101,7 @@ def test_strip_all_empty_raises_empty_messages(
 
     called: dict[str, Any] = {}
 
-    def _fake_fallback(slot: str, call_fn: Any, call_kwargs: dict[str, Any]) -> Any:
+    def _fake_fallback(slot: str, call_fn: Any, call_kwargs: dict[str, Any], **_kw: Any) -> Any:
         called["reached"] = True
         return None
 
@@ -927,17 +1118,11 @@ import http.server
 import socketserver
 import threading
 import time
-import types
 
 import httpx
 
 from openreview_cli.gateway.models import StreamingOutputEvent
-
-
-def _make_chunk(content: str) -> types.SimpleNamespace:
-    return types.SimpleNamespace(
-        choices=[types.SimpleNamespace(delta=types.SimpleNamespace(content=content))]
-    )
+from tests.helpers.stream_doubles import StreamChunk, TerminatedStream, TruncatedStream
 
 
 def _build_gw() -> Gateway:
@@ -952,8 +1137,8 @@ def _build_gw() -> Gateway:
 
 def test_chat_stream_survives_cost_logging_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """T030 replica for streaming: cost-logging raise must not kill stream."""
-    chunks = [_make_chunk("Hello"), _make_chunk(" world")]
-    monkeypatch.setattr("openreview_cli.gateway.router.completion", lambda **kwargs: iter(chunks))
+    stream = TerminatedStream([StreamChunk("Hello"), StreamChunk(" world")])
+    monkeypatch.setattr("openreview_cli.gateway.router.completion", lambda **kwargs: stream)
     monkeypatch.setattr(
         "openreview_cli.prompts.store.PromptStore",
         MagicMock(resolve=lambda *a, **k: None),
@@ -967,6 +1152,8 @@ def test_chat_stream_survives_cost_logging_failure(monkeypatch: pytest.MonkeyPat
     gw._cost_tracker.log_call = _boom  # type: ignore[method-assign]
 
     events = list(gw.chat_stream("extraction", [{"role": "user", "content": "hi"}]))
+    # the row is now written on the post-terminal path, so `done` only follows a
+    # cost-logging attempt that survived the raise above.
     assert events == [
         StreamingOutputEvent(type="chunk", text="Hello"),
         StreamingOutputEvent(type="chunk", text=" world"),
@@ -975,8 +1162,8 @@ def test_chat_stream_survives_cost_logging_failure(monkeypatch: pytest.MonkeyPat
 
 
 def test_chat_stream_yields_chunks_and_done(monkeypatch: pytest.MonkeyPatch) -> None:
-    chunks = [_make_chunk("Hello"), _make_chunk(" world")]
-    monkeypatch.setattr("openreview_cli.gateway.router.completion", lambda **kwargs: iter(chunks))
+    stream = TerminatedStream([StreamChunk("Hello"), StreamChunk(" world")])
+    monkeypatch.setattr("openreview_cli.gateway.router.completion", lambda **kwargs: stream)
     monkeypatch.setattr(
         "openreview_cli.prompts.store.PromptStore",
         MagicMock(resolve=lambda *a, **k: None),
@@ -997,7 +1184,7 @@ def test_stream_timeout_is_dual_not_single(monkeypatch: pytest.MonkeyPatch) -> N
 
     def fake_completion(**kwargs: Any) -> Any:
         captured["timeout"] = kwargs.get("timeout")
-        return iter([])
+        return TruncatedStream([])
 
     monkeypatch.setattr("openreview_cli.gateway.router.completion", fake_completion)
     monkeypatch.setattr(
@@ -1006,12 +1193,60 @@ def test_stream_timeout_is_dual_not_single(monkeypatch: pytest.MonkeyPatch) -> N
     )
 
     gw = _build_gw()
-    list(gw.chat_stream("extraction", [{"role": "user", "content": "hi"}]))
+    with pytest.raises(ConnectionError):
+        list(gw.chat_stream("extraction", [{"role": "user", "content": "hi"}]))
 
     t = captured["timeout"]
     assert isinstance(t, httpx.Timeout)
     assert t.connect == 15.0
     assert t.read == 45.0
+
+
+def test_iter_stream_raises_for_a_stream_with_no_terminal_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unterminated stream is a typed connection error naming the provider."""
+    stream = TruncatedStream([StreamChunk("a"), StreamChunk("b")])
+    monkeypatch.setattr("openreview_cli.gateway.router.completion", lambda **kwargs: stream)
+    monkeypatch.setattr(
+        "openreview_cli.prompts.store.PromptStore",
+        MagicMock(resolve=lambda *a, **k: None),
+    )
+
+    gw = _build_gw()
+    with pytest.raises(ConnectionError) as exc:
+        list(gw.chat_stream("extraction", [{"role": "user", "content": "hi"}]))
+    assert "anthropic" in str(exc.value)
+
+
+def test_a_truncated_stream_writes_no_cost_row_and_a_terminal_one_writes_exactly_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Socket-free twin of the chaos node: only a completed drain books a cost row."""
+    monkeypatch.setattr(
+        "openreview_cli.prompts.store.PromptStore",
+        MagicMock(resolve=lambda *a, **k: None),
+    )
+
+    terminal = TerminatedStream([StreamChunk("Hello"), StreamChunk(" world")])
+    monkeypatch.setattr("openreview_cli.gateway.router.completion", lambda **kwargs: terminal)
+    gw = _build_gw()
+    log_call = MagicMock()
+    gw._cost_tracker.log_call = log_call  # type: ignore[method-assign]
+
+    events = list(gw.chat_stream("extraction", [{"role": "user", "content": "hi"}]))
+    assert log_call.call_count == 1
+    assert events[-1] == StreamingOutputEvent(type="done")
+
+    truncated = TruncatedStream([StreamChunk("a"), StreamChunk("b")])
+    monkeypatch.setattr("openreview_cli.gateway.router.completion", lambda **kwargs: truncated)
+    gw2 = _build_gw()
+    log_call2 = MagicMock()
+    gw2._cost_tracker.log_call = log_call2  # type: ignore[method-assign]
+
+    with pytest.raises(ConnectionError):
+        list(gw2.chat_stream("extraction", [{"role": "user", "content": "hi"}]))
+    log_call2.assert_not_called()
 
 
 @pytest.mark.timeout(75)
