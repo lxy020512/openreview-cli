@@ -120,6 +120,9 @@ def _parse_category(raw: dict[str, Any]) -> Category:
     DeprecationWarning. New keys (preferred/acceptable/walkaway) take
     precedence when both are present.
     """
+    if not isinstance(raw, dict):
+        raise PlaybookLoadError("each category must be a mapping")
+
     resolved = dict(raw)
     used_legacy = False
 

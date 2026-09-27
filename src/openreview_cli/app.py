@@ -12,7 +12,12 @@ import typer
 
 from openreview_cli import __version__
 from openreview_cli.config.auth import ensure_auth
-from openreview_cli.config.loader import get_config_value, load_config, set_config_value
+from openreview_cli.config.loader import (
+    ConfigLoadError,
+    get_config_value,
+    load_config,
+    set_config_value,
+)
 from openreview_cli.config.paths import get_config_dir, get_data_dir, get_log_dir
 from openreview_cli.errors import EXIT_USAGE, config_error
 from openreview_cli.gateway.redaction import install_on_root_handlers
@@ -254,7 +259,12 @@ def _init(debug: bool = False, verbose: bool = False) -> None:
     install_on_root_handlers()
 
     config_dir = get_config_dir()
-    config = load_config(config_dir / "config.yml")
+    from pydantic import ValidationError
+
+    try:
+        config = load_config(config_dir / "config.yml")
+    except (ConfigLoadError, ValidationError) as exc:
+        config_error(str(exc))
     logger.info("config loaded")
 
     ensure_auth(config_dir)
@@ -1401,9 +1411,13 @@ provider_app = typer.Typer(
 @gateway_app.command("setup")
 def gateway_setup() -> None:
     """Interactive setup wizard for provider and model configuration."""
+    from openreview_cli.config.auth import AuthCorruptError
     from openreview_cli.gateway.wizard import gateway_setup as _wizard
 
-    _wizard()
+    try:
+        _wizard()
+    except AuthCorruptError as exc:
+        config_error(str(exc))
 
 
 @gateway_app.command("status")
@@ -1720,7 +1734,7 @@ def provider_add(
     ),
 ) -> None:
     """Add a custom OpenAI-compatible provider (non-interactive)."""
-    from openreview_cli.config.auth import save_provider_credentials
+    from openreview_cli.config.auth import AuthCorruptError, save_provider_credentials
     from openreview_cli.config.paths import get_config_dir
     from openreview_cli.gateway.errors import (
         EnvKeyCollisionError,
@@ -1755,7 +1769,10 @@ def provider_add(
                 typer.echo(f"Error: --cred {key} has empty value", err=True)
                 raise typer.Exit(code=2)
             parsed[key] = value
-        save_provider_credentials(get_config_dir() / "auth.json", name, parsed)
+        try:
+            save_provider_credentials(get_config_dir() / "auth.json", name, parsed)
+        except AuthCorruptError as exc:
+            config_error(str(exc))
 
     typer.echo(
         f"Added provider '{name}' (source: custom). "

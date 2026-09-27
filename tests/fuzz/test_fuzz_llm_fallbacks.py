@@ -17,7 +17,8 @@ malformed/hostile model reply, after reading the code:
   object is classified ``unknown`` and a malformed export file is skipped with
   a logged warning (``report.py:316-326``, ``:427-432``).
 
-Known-broken behaviour (RT-015) carries ``xfail(strict=True)``.
+RT-015 is fixed: ``_parse_json`` returns the caller's exact fallback object for
+any non-dict reply, so ``qa._parse_qa_response`` inherits the guard.
 """
 
 from __future__ import annotations
@@ -76,10 +77,6 @@ def test_prompts_parse_json_round_trips_a_valid_object(monkeypatch: pytest.Monke
     [corpus_llm.json_null, corpus_llm.json_string_not_object, corpus_llm.enormous_array],
     ids=["null", "string", "array"],
 )
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-015: _parse_json returns a non-dict for a valid-JSON non-object",
-)
 def test_prompts_parse_json_never_returns_a_non_dict(build: Callable[[], str]) -> None:
     """The declared ``-> dict`` contract: any reply maps to a dict."""
     result: object = _prompts._parse_json(build(), {})
@@ -99,10 +96,6 @@ def test_qa_parse_response_returns_the_documented_fallback(monkeypatch: pytest.M
     "build",
     [corpus_llm.json_null, corpus_llm.enormous_array, corpus_llm.json_string_not_object],
     ids=["null", "array", "string"],
-)
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-015: _parse_qa_response raises AttributeError on a valid-JSON non-object",
 )
 def test_qa_parse_response_never_raises_on_a_non_object(build: Callable[[], str]) -> None:
     result: object = _qa._parse_qa_response(build())

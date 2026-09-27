@@ -2,6 +2,11 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
+
+class ConfigLoadError(ValueError):
+    """config.yml could not be parsed or is not a mapping."""
+
+
 DEFAULT_CONFIG: dict[str, object] = {
     "version": 1,
     "privacy": {
@@ -279,13 +284,26 @@ def get_config_value(config: dict[str, Any], key: str) -> Any:
     return _deep_get(config, key)
 
 
+def _read_config_mapping(config_path: Path) -> dict[str, Any]:
+    """Read config.yml as a top-level mapping, else raise ConfigLoadError."""
+    import yaml
+
+    try:
+        with open(config_path) as f:
+            raw = yaml.safe_load(f) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigLoadError(f"{config_path} is not valid YAML: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ConfigLoadError(f"{config_path} must contain a mapping at the top level")
+    return raw
+
+
 def set_config_value(config_path: Path, key: str, value: str) -> dict[str, Any]:
     import shutil
 
     import yaml
 
-    with open(config_path) as f:
-        raw = yaml.safe_load(f) or {}
+    raw = _read_config_mapping(config_path)
 
     backup = config_path.with_suffix(".yml.bak")
     shutil.copy2(config_path, backup)
@@ -314,8 +332,7 @@ def load_config(config_path: Path) -> dict[str, Any]:
         merged = _deep_merge(dict(DEFAULT_CONFIG), env_overrides)
         return _validate_and_merge(merged, dict(DEFAULT_CONFIG))
 
-    with open(config_path) as f:
-        raw = yaml.safe_load(f) or {}
+    raw = _read_config_mapping(config_path)
     env_overrides = _get_env_overrides()
     merged = _deep_merge(raw, env_overrides)
     return _validate_and_merge(merged, dict(DEFAULT_CONFIG))
@@ -336,8 +353,7 @@ def add_custom_provider(
 
     import yaml
 
-    with open(config_path) as f:
-        raw = yaml.safe_load(f) or {}
+    raw = _read_config_mapping(config_path)
 
     backup = config_path.with_suffix(".yml.bak")
     shutil.copy2(config_path, backup)

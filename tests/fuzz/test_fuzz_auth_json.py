@@ -1,16 +1,13 @@
 """W4 fuzz suite: the ``auth.json`` WRITE boundary.
 
 Sharp edge 7 (plan section 3). The read path is guarded — ``load_auth`` catches
-``json.JSONDecodeError`` and raises ``AuthCorruptError`` (``config/auth.py:41-45``),
-and the corrupt-``auth.json`` read is already asserted by
-``tests/unit/test_auth.py:177``; permissions by ``:24,32,167``. This suite does
-NOT re-assert either. It targets only the unguarded WRITE sites: ``save_key``
-(``auth.py:97``) and ``save_provider_credentials`` (``auth.py:110``), reached
-from the CLI through ``gateway provider add`` (``app.py:1758``).
-
-Expected: a corrupt ``auth.json`` fails cleanly (exit 5, ``Config error``), as
-the read path already does with ``AuthCorruptError``. Observed today: the write
-paths raise a raw ``json.JSONDecodeError``.
+``json.JSONDecodeError`` and raises ``AuthCorruptError``, and the
+corrupt-``auth.json`` read is already asserted by ``tests/unit/test_auth.py``;
+permissions likewise. This suite does NOT re-assert either. It targets the WRITE
+sites: ``save_key`` and ``save_provider_credentials``, reached from the CLI
+through ``gateway provider add``. Both now read through ``_read_auth_json``, so
+a corrupt ``auth.json`` raises ``AuthCorruptError``, which the CLI maps to exit 5
+(``Config error``).
 """
 
 from __future__ import annotations
@@ -34,11 +31,6 @@ _IS_WINDOWS = platform.system() == "Windows"
 # ── CLI: a corrupt auth.json must fail the write cleanly ────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-022: save_provider_credentials (auth.py:110) raises a raw json.JSONDecodeError on a "
-    "corrupt auth.json; `gateway provider add --cred` exits 1 instead of a clean exit 5",
-)
 def test_auth_corrupt_credentials_file_is_a_clean_config_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -96,13 +88,9 @@ def test_auth_valid_file_with_wrong_mode_is_repaired_on_write(
     assert data["zzzprobe"]["api_key"] == "secret-canary"
 
 
-# ── Library: both unguarded write sites raise instead of the typed error ────
+# ── Library: both write sites map a corrupt file to AuthCorruptError ───
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-022: save_key (auth.py:97) raises a raw json.JSONDecodeError instead of AuthCorruptError",
-)
 def test_save_key_corrupt_file_raises_auth_corrupt_error(tmp_path: Path) -> None:
     path = corpus_state.auth_json_invalid(tmp_path)
     with (
@@ -113,11 +101,6 @@ def test_save_key_corrupt_file_raises_auth_corrupt_error(tmp_path: Path) -> None
     assert hits[0] >= 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="RT-022: save_provider_credentials (auth.py:110) raises a raw json.JSONDecodeError "
-    "instead of AuthCorruptError",
-)
 def test_save_provider_credentials_corrupt_file_raises_auth_corrupt_error(tmp_path: Path) -> None:
     path = corpus_state.auth_json_invalid(tmp_path)
     with (

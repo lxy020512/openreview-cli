@@ -12,9 +12,11 @@ def _parse_json(raw: str, fallback: dict[str, Any]) -> dict[str, Any]:
     """Shared JSON parser with fallback for extraction and QA responses."""
     try:
         data = json.loads(strip_fences(raw))
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:  # json.JSONDecodeError subclasses ValueError
         return fallback
-    return data  # type: ignore[no-any-return]
+    if not isinstance(data, dict):
+        return fallback
+    return data
 
 
 def build_qa_messages(

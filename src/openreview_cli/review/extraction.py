@@ -20,6 +20,13 @@ from openreview_cli.review.prompts import _build_extraction_messages_common
 
 logger = logging.getLogger(__name__)
 
+_SAFE_DEFAULT_RESPONSE: dict[str, Any] = {
+    "position": "uncertain",
+    "confidence": 0.0,
+    "citation": "",
+    "category_match": False,
+}
+
 
 def match_category(clause_heading: str, playbook: Playbook) -> Category | None:
     """Match a clause heading to a playbook category via heading keyword match.
@@ -124,7 +131,11 @@ def extract_clause(
             recovery_ctx=recovery_ctx,
             provider_list=provider_list,
         )
-        parsed = _parse_response(raw_response)
+        parsed = _parse_response_or_none(raw_response)
+        if parsed is None:
+            raise ValueError(  # noqa: TRY301 - routed through the handler below, which records it
+                "extraction response was unusable (not a JSON object or an out-of-range confidence)"
+            )
     except Exception as exc:
         logger.warning("Extraction failed for %s: %s", clause_id, exc)
         return ClauseAssessment(
@@ -161,19 +172,42 @@ def extract_clause(
 def _parse_response(raw: str) -> dict[str, Any]:
     """Parse the extraction agent's JSON response, with fallback.
 
+    Retained public contract: it delegates to ``_parse_response_or_none`` and
+    always returns the four-key dict, so its test-only caller status is
+    intentional.
+
     Handles markdown-wrapped JSON (`` ```json ... ``` ``) which is a
     common LLM output format.
     """
+    parsed = _parse_response_or_none(raw)
+    if parsed is None:
+        return dict(_SAFE_DEFAULT_RESPONSE)
+    return parsed
+
+
+def _parse_response_or_none(raw: str) -> dict[str, Any] | None:
+    """Return the four-key response dict, or ``None`` for any unusable reply."""
     stripped = strip_fences(raw)
 
     try:
         data = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
-        return {"position": "uncertain", "confidence": 0.0, "citation": "", "category_match": False}
+    except ValueError:  # json.JSONDecodeError subclasses ValueError
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    try:
+        confidence = float(data.get("confidence", 0.0))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+    if not 0.0 <= confidence <= 1.0:
+        return None
 
     return {
         "position": str(data.get("position", "uncertain")),
-        "confidence": float(data.get("confidence", 0.0)),
+        "confidence": confidence,
         "citation": str(data.get("citation", "")),
         "category_match": bool(data.get("category_match", False)),
     }
