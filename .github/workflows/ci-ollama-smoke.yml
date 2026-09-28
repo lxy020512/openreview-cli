@@ -79,7 +79,7 @@ jobs:
       - name: Set every slot to Ollama
         run: |
           set -e
-          uv run openreview gateway set reasoning  ollama/qwen3:4b
+          uv run openreview gateway set reasoning  ollama/definitely-not-a-real-model:0b
           uv run openreview gateway set extraction ollama/qwen3:4b
           uv run openreview gateway set graph      ollama/qwen3:4b
           uv run openreview gateway set grounding  ollama/qwen3:4b
