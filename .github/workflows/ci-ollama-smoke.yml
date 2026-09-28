@@ -8,8 +8,6 @@ permissions:
   contents: read
 
 on:
-  push:
-    branches: [ci-ollama-smoke, fix/170-174-ollama-base-url]
   workflow_dispatch:
 
 jobs:
@@ -107,6 +105,7 @@ jobs:
       - name: Run one real call per slot (a failure does not stop the others)
         run: |
           set +e
+          failed=""
           for slot in reasoning extraction graph grounding embedding reranking; do
             echo "::group::gateway test ${slot}"
             uv run openreview gateway test "${slot}" > "/tmp/slot-${slot}.log" 2>&1
@@ -114,5 +113,20 @@ jobs:
             echo "slot=${slot} exit_code=${code}"
             cat "/tmp/slot-${slot}.log"
             echo "::endgroup::"
+            if [ "${code}" -ne 0 ]; then
+              # #175: the reranking model is not published in the Ollama library, so a
+              # reranking failure caused by the model being absent is NOT TESTABLE, not
+              # FAIL. Remove this exclusion once #175 is fixed.
+              if [ "${slot}" = "reranking" ] && ! ollama list | grep -q "qwen3-reranker-0.6b"; then
+                echo "slot=reranking status=NOT_TESTABLE (model qwen3-reranker-0.6b not in Ollama; see #175)"
+              else
+                failed="${failed} ${slot}"
+              fi
+            fi
           done
+          if [ -n "${failed}" ]; then
+            echo "FAILED slots:${failed}"
+            exit 1
+          fi
+          echo "All testable slots passed."
           exit 0
