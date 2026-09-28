@@ -32,7 +32,7 @@ DEFAULT_CONFIG: dict[str, object] = {
                 "primary": "ollama/nomic-embed-text",
             },
             "reranking": {
-                "primary": "ollama/qwen3-reranker-0.6b",
+                "primary": "voyage/rerank-2.5",
             },
             "graph": {
                 "primary": "ollama/qwen3:8b",
@@ -126,7 +126,7 @@ def _validate_and_merge(raw: dict[str, Any], defaults: dict[str, Any]) -> dict[s
             primary="ollama/qwen3:4b", params=ModelParams(temperature=0.0, max_tokens=2000)
         )
         embedding: EmbeddingSlot = EmbeddingSlot(primary="ollama/nomic-embed-text")
-        reranking: RerankingSlot = RerankingSlot(primary="ollama/qwen3-reranker-0.6b")
+        reranking: RerankingSlot = RerankingSlot(primary="voyage/rerank-2.5")
         graph: ModelSlot = ModelSlot(
             primary="ollama/qwen3:8b", params=ModelParams(temperature=0.0, max_tokens=4000)
         )

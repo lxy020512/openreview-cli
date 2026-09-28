@@ -103,7 +103,7 @@
                 "reasoning": true,
                 "context_window": 32768,
                 "tool_call": true,
-                "rerank": true
+                "rerank": false
             },
             "models": {
                 "qwen3:8b": {
@@ -139,7 +139,7 @@
                     "note": "Local embedding, ~274 MB"
                 },
                 "qwen3-reranker-0.6b": {
-                    "slots": ["reranking"],
+                    "slots": [],
                     "context": 8192,
                     "ram": "600 MB",
                     "recommended": true,

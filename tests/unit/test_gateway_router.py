@@ -1455,18 +1455,26 @@ class TestCustomProviderRouting:
 def test_rerank_capability_passes_for_bundled_reranker_providers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """B3: ollama/cohere/voyage declare rerank capability; a chat-only provider must fail."""
+    """B3: cohere/voyage declare rerank capability; ollama and a chat-only provider must fail."""
     from openreview_cli.gateway.registry import load_registry
 
     registry = load_registry()
     gw = Gateway.__new__(Gateway)
     req = CapabilityRequirement(capability="rerank")
 
-    for name in ("ollama", "cohere", "voyage"):
+    # Providers with real rerank support pass.
+    for name in ("cohere", "voyage"):
         info = registry.get(name)
         assert info is not None, f"{name} missing from registry"
         # Should not raise
         gw.validate_capability(info, req)
+
+    # Ollama does not support reranking: litellm has no rerank provider branch for it
+    # and Ollama exposes no rerank endpoint, so the capability must be rejected.
+    ollama = registry.get("ollama")
+    assert ollama is not None
+    with pytest.raises(CapabilityMismatchError):
+        gw.validate_capability(ollama, req)
 
     # A provider that genuinely lacks rerank must still be rejected.
     info = registry.get("anthropic")
