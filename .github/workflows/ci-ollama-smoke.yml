@@ -9,7 +9,7 @@ permissions:
 
 on:
   push:
-    branches: [ci-ollama-smoke]
+    branches: [ci-ollama-smoke, fix/170-174-ollama-base-url]
   workflow_dispatch:
 
 jobs:
