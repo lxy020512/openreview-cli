@@ -95,7 +95,7 @@
             "name": "Ollama",
             "env_key": null,
             "auth_required": false,
-            "base_url": "http://localhost:11434/v1",
+            "base_url": "http://localhost:11434",
             "is_local": true,
             "source": "bundled",
             "capabilities": {
