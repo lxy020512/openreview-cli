@@ -144,6 +144,11 @@ Fault reproduction, direct, in-process *(measured)*:
   issue lists are **synthetic singletons** (`grounding/discriminator.py:93`,
   `pii/engine.py:554`) where `None` is correct and stays (§3.10).
 
+  > **Superseded (2026-09-28):** the health score was subsequently re-scoped to structural defects
+  > only — `DEFAULT_WEIGHTS` is now `[0.0, 0.0, 0.35, 0.40, 0.25]` (density and depth score nothing),
+  > so a defect-free document, flat or structured, scores 100 by design. See the task doc's
+  > `## Superseded (2026-09-28)` note.
+
 ---
 
 ## 3. Design per issue (function level, order of operations)
@@ -601,6 +606,10 @@ precision gate in `tests/integration/test_benchmark_pii_accuracy.py::test_pii_re
 therefore **fails after this fix** and must be re-baselined in the same PR (§4.3), together with the
 receipt. This is a consequence of fixing the defect, not a regression in detection.
 
+> **Superseded (2026-09-28):** the projected type-strict figure **0.7973 (523/656)** was wrong; the
+> implemented measurement is **0.8308 (545/656)**. The span-level 0.9482 (622/656) projection was
+> correct. See the task doc's `## Superseded (2026-09-28)` note.
+
 `benchmark/metrics_pii.py::_values_match` (`:56-83`) is **not** changed (C11). The defect is that no
 *test* pins the placeholder label; §5.9 adds one.
 
@@ -706,6 +715,11 @@ then runs the real `ClauseHierarchyBuilder` → `compute_metrics` → `compute_h
 | `pdf/flat_document.pdf` | 5 / 0 / 0, score 98 | 5 / 0 / 0, score 98 | 0.0 | 1 | 0.0 | 98 |
 | `docx/flat_document.docx` | 5 / 0 / 0, score 98 | 5 / 0 / 0, score 98 | 0.0 | 1 | 0.0 | 98 |
 
+> **Superseded (2026-09-28):** these projected scores predate the health-score re-scope. With
+> `DEFAULT_WEIGHTS = [0.0, 0.0, 0.35, 0.40, 0.25]` a defect-free document — flat or structured —
+> scores 100 by design, so the flat NDA pin and the 98s do move, and the numbered fixtures no longer
+> score 89. See the task doc's `## Superseded (2026-09-28)` note.
+
 Consequences for the pinned tests: **the `nda_with_pii.pdf` pins do not change** (§4.2 rows 7–8) —
 that fixture has no hierarchy to find, and inventing one would be wrong. The graph caveat text
 `tui/screens/graph.py:45-48` must be reworded because its parenthetical ("clause parsers assign no
@@ -716,6 +730,11 @@ Approved and **not** done (C12): re-baselining `MAX_EXPECTED_DEPTH` (`graph/heal
 `DEFAULT_WEIGHTS` (`:16`). Residual, recorded: an unnumbered document still scores 98
 (`c2 = 1 - 1/10 = 0.9` for `max_depth == 1`), i.e. the issue's "near-maximal for almost any real
 document" complaint survives for documents with no numbering at all. See §6.4.
+
+> **Superseded (2026-09-28):** the re-baseline was subsequently done — `DEFAULT_WEIGHTS` is now
+> `[0.0, 0.0, 0.35, 0.40, 0.25]` and the score measures structural defects only, so a defect-free
+> document scores 100 regardless of hierarchy and the "unnumbered document still scores 98" residual
+> no longer holds. See the task doc's `## Superseded (2026-09-28)` note.
 
 ### 3.10 Order of operations — public entry points after the change
 
@@ -775,6 +794,11 @@ The #145 node at `:680` currently reads `_w5.prepare_state` + `load_registry()` 
 | 12 | `tests/fuzz/test_fuzz_sqlite.py::test_damaged_index_file_is_not_misreported` (`:173`) | `with pytest.raises(sqlite3.DatabaseError): RetrievalStorage(path).get_index_meta()` | **Invert + rename** to `test_damaged_index_file_is_reported_as_index_corrupt`: `pytest.raises(IndexCorruptError)`, keep the docstring's reference to #118 (this test *is* the filed issue's repro), and assert `isinstance(exc.value, RetrievalError)`. **This pin is not in the brief's list and is the only automated repro #118 has.** |
 | 13 | `tests/integration/test_benchmark_pii_accuracy.py::test_pii_recall_above_threshold` (`:59`) | `assert precision.value >= 0.95` | **Re-baseline (this is the forced case)**: measured 0.9526 → 0.9482 after resolution, so the assertion must move to the new value with an explicit note that span-level precision *cannot* stay at 0.95 once the wrong-label duplicates it was crediting are removed, and that recall is unchanged (0.9640, still ≥ 0.95). Preferred form: keep a ≥0.94 gate **and** add a `pii_precision_type_strict` assertion (measured 0.7973) so the suite stops rewarding wrong labels. Flag this in the PR description as a gate change, not a silent slackening. |
 | 14 | `docs/benchmarks/results/pii-accuracy.json` + `docs/BENCHMARKS.md` (the `## PII accuracy (measured 50 seeded contracts)` section) | pinned by `tests/unit/test_benchmark_receipts.py::test_pii_accuracy_per_type_numerators_match_the_receipt` (`:607`) and `::test_pii_accuracy_overall_recall_matches_the_receipt` (`:616`), plus `::test_every_receipt_pins_its_producing_content` (`:382`) over the `metrics_pii.py` sha256 | **Re-measure and update the receipt + the page** (Precision `95.3% | 683 / 717` → `94.8% | 622 / 656`, F1, the `n` fields); the ORGANIZATION per-type cell and the Recall cell (96.4%) do **not** change, so `:607`/`:616` keep passing. The `metrics_pii.py` provenance sha is unchanged because C11 leaves that file alone — verify before touching the receipt. |
+
+> **Superseded (2026-09-28) for rows 8–10:** after the health-score re-scope a defect-free document
+> scores 100, so the flat NDA pin (rows 8–9) is now **100/100**, not the 98 recorded here, and the
+> row-10 caveat docstring/copy was reworded to match. See the task doc's
+> `## Superseded (2026-09-28)` note.
 
 ### 4.3 Tests that are neither xfail nor "old-behaviour" pins but still need an edit
 

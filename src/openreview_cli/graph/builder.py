@@ -77,6 +77,7 @@ class ClauseHierarchyBuilder:
                     "paragraph_count": clause.paragraph_count,
                     "title": clause.title,
                 },
+                parent_id=clause.parent_id,
             )
             nodes[clause.id] = node
 
@@ -120,8 +121,11 @@ class ClauseHierarchyBuilder:
             refs = detector.detect(clause.text)
             seen_targets: set[str] = set()
             for ref_number in refs:
-                target_id = numeric_index.get(ref_number)
-                if target_id and target_id != clause.id and target_id not in seen_targets:
+                resolved = numeric_index.get(ref_number)
+                # An unresolved reference still gets an edge (to a deterministic
+                # non-node id) so compute_broken_ref_count can see the defect.
+                target_id = resolved if resolved is not None else f"missing-section-{ref_number}"
+                if target_id != clause.id and target_id not in seen_targets:
                     seen_targets.add(target_id)
                     graph.edges.append(
                         GraphEdge(

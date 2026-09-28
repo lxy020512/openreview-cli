@@ -85,6 +85,35 @@ def test_type_label_is_ignored_by_matching() -> None:
     assert metrics["pii_recall_organization"].value == 1.0
 
 
+def test_type_strict_precision_penalises_a_wrong_label() -> None:
+    """A right span with a wrong label lowers type-strict precision only.
+
+    The span-level ``pii_precision`` still credits the detection (the span is
+    redacted), but the reported type is wrong, so the type-strict figure drops.
+    """
+    documents = [
+        (
+            "doc1",
+            "AutoName1 Smith works at AutoCompanyA1 Inc.",
+            [
+                {"value": "AutoName1 Smith", "type": "PERSON"},
+                {"value": "AutoCompanyA1 Inc.", "type": "ORGANIZATION"},
+            ],
+        ),
+    ]
+
+    def detect_fn(text: str) -> list[dict[str, str]]:
+        return [
+            {"value": "AutoName1 Smith", "type": "PERSON"},
+            {"value": "AutoCompanyA1 Inc.", "type": "LOCATION"},
+        ]
+
+    metrics = evaluate_pii_accuracy(documents, detect_fn)
+    assert metrics["pii_precision"].value == 1.0
+    assert metrics["pii_precision_type_strict"].value == 0.5
+    assert metrics["pii_precision_type_strict"].n == metrics["pii_precision"].n == 2
+
+
 def test_disjoint_values_do_not_match() -> None:
     # No shared tokens and no substring relation → no match. (Note: two
     # different people sharing a surname DO match under token-overlap

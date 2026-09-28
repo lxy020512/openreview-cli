@@ -18,6 +18,16 @@ independently reviewed by a second fresh sub-agent. The Lead runs the full-suite
   every occurrence of a value globally.
 - Everything else follows the design doc as written.
 
+## Superseded (2026-09-28)
+
+**#115 — the arbitration above is superseded.** The owner approved the opposite: overlapping spans are
+deduplicated in the engine (`detect_on_page`), the type-agnostic FR-006 span predicate is kept, and
+`benchmark/metrics_pii.py` gains a `pii_precision_type_strict` metric. Span-level precision moves
+0.9526 (683/717) → **0.9482 (622/656)** against FR-009's ≥0.95 target, so the span-level gate in
+`tests/integration/test_benchmark_pii_accuracy.py` is re-baselined to **0.945** with
+`pii_precision_type_strict ≥ 0.82` as the compensating label signal (type-strict measures 0.8308,
+545/656; recall 0.9640; F1 0.956). The placeholder layer is no longer the fix site.
+
 ## Task A — CLI startup + logging (#157, #158, #159, #161, #160)
 
 Files: `src/openreview_cli/app.py`, `src/openreview_cli/storage/database.py`,

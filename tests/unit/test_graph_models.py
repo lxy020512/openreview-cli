@@ -94,8 +94,8 @@ class TestContractGraph:
         )
         assert sorted(graph.roots) == ["c1", "c2"]
 
-    def test_orphan_ids_root_with_children_is_orphan(self) -> None:
-        """Root with children but no parent is orphaned per spec."""
+    def test_orphan_ids_root_with_children_is_not_orphan(self) -> None:
+        """A root with children declares no parent, so it is not an orphan."""
         graph = ContractGraph(
             nodes={
                 "c1": GraphNode("c1", "1", "t", 0),
@@ -103,30 +103,28 @@ class TestContractGraph:
             },
             edges=[GraphEdge("c1", "c2", EdgeType.parent_child)],
         )
-        # c1 has no incoming parent_child edge but has outgoing → orphan
-        assert graph.orphan_ids == ["c1"]
+        # c1 has no declared parent → not an orphan, whatever its children.
+        assert graph.orphan_ids == []
 
     def test_orphan_ids_detects_orphans(self) -> None:
+        """Only a clause naming a parent the graph does not contain is an orphan."""
         graph = ContractGraph(
             nodes={
                 "c1": GraphNode("c1", "1", "t", 0),
                 "c2": GraphNode("c2", "2", "t", 1),
-                "c3": GraphNode("c3", "3", "t", 2),
-                "c4": GraphNode("c4", "4", "t", 2),
+                "c3": GraphNode("c3", "3", "t", 2, parent_id="missing"),
+                "c4": GraphNode("c4", "4", "t", 2, parent_id="c1"),
             },
-            edges=[
-                GraphEdge("c1", "c2", EdgeType.parent_child),
-                GraphEdge("c3", "c4", EdgeType.parent_child),
-            ],
+            edges=[GraphEdge("c1", "c4", EdgeType.parent_child)],
         )
-        assert "c3" in graph.orphan_ids
-        assert "c2" not in graph.orphan_ids
+        assert graph.orphan_ids == ["c3"]
+        assert "c4" not in graph.orphan_ids
 
     def test_json_round_trip(self) -> None:
         original = ContractGraph(
             nodes={
                 "c1": GraphNode("c1", "1", "text1", 0),
-                "c2": GraphNode("c2", "2", "text2", 1),
+                "c2": GraphNode("c2", "2", "text2", 1, parent_id="c1"),
             },
             edges=[
                 GraphEdge("c1", "c2", EdgeType.parent_child),
@@ -138,6 +136,8 @@ class TestContractGraph:
         restored = ContractGraph.from_json(json_str)
         assert len(restored.nodes) == 2
         assert restored.nodes["c1"].label == "1"
+        assert restored.nodes["c1"].parent_id is None
+        assert restored.nodes["c2"].parent_id == "c1"
         assert len(restored.edges) == 2
         assert restored.edges[0].edge_type == EdgeType.parent_child
         assert restored.edges[1].metadata == {"pattern_matched": "test"}

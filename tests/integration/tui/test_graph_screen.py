@@ -62,7 +62,7 @@ async def test_real_pdf_renders_real_metrics_and_score() -> None:
         assert "Orphan ratio: 0.000" in body
         assert "Broken cross-refs: 0" in body
         assert "Definition coverage: 1.000" in body
-        assert "Health score: 98/100" in body
+        assert "Health score: 100/100" in body
 
         subtitle = _subtitle(screen)
         assert "nda_with_pii.pdf" in subtitle
@@ -71,7 +71,7 @@ async def test_real_pdf_renders_real_metrics_and_score() -> None:
 
 
 async def test_real_pdf_shows_the_no_hierarchy_caveat() -> None:
-    """No clause parser populates parent_id, so the score needs the caveat."""
+    """A flat document shows the caveat: the score defects, not hierarchy richness."""
     app = OpenReviewApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await _open(pilot, app, REAL_PDF)

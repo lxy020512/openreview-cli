@@ -88,6 +88,9 @@ def test_detect_on_page_still_reports_the_span(pii_engine: PiiEngine) -> None:
     assert tax_ids[0].end == 20
     assert tax_ids[0].original_value == "11-7654320"
 
+    span_entities = [e for e in entities if (e.start, e.end) == (10, 20)]
+    assert len(span_entities) == 1, f"expected one entity for span (10,20), got {span_entities}"
+
 
 @pytest.mark.integration
 def test_seeded_contract_uses_the_specific_type_for_overlapping_values(
@@ -102,9 +105,18 @@ def test_seeded_contract_uses_the_specific_type_for_overlapping_values(
     assert result.mapping["REG_1"] == "REG-100001"
     assert result.mapping["PHONE_1"] == "555-0101"
 
-    assert "[DATE_1]" not in result.stripped_text
-    assert "[DATE_3]" not in result.stripped_text
-    assert "[PARTY_E]" not in result.stripped_text
+    # Issue #115: overlapping-span duplicates are resolved in the engine, so the
+    # phone number and tax ID are no longer also DATEs and the registration number
+    # is no longer also a PARTY. The date of birth remains the only DATE.
+    assert result.mapping["DATE_1"] == "1971-05-02"
+    assert [k for k in result.mapping if k.startswith("DATE_")] == ["DATE_1"]
+    assert not any(
+        key.startswith("DATE_") and value in ("11-7654320", "555-0101")
+        for key, value in result.mapping.items()
+    )
+    assert not any(
+        key.startswith("PARTY_") and value == "REG-100001" for key, value in result.mapping.items()
+    )
     assert result.stripped_text.count("[TAX_ID_1]") == 1
     assert result.stripped_text.count("[REG_1]") == 1
     assert result.stripped_text.count("[PHONE_1]") == 1

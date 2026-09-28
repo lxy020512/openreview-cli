@@ -63,9 +63,11 @@ def compute_max_depth(graph: ContractGraph) -> int:
 
 
 def compute_orphan_ratio(graph: ContractGraph) -> float:
-    """Fraction of nodes with no incoming parent_child edge but with children.
+    """Fraction of clauses whose declared parent is missing from the graph.
 
-    Standalone nodes (no parent, no children) are not orphaned.
+    A top-level clause (no declared parent) is not counted, whatever its
+    children; only a clause naming a parent the document does not contain is
+    an orphan.
     """
     if len(graph.nodes) == 0:
         return 0.0

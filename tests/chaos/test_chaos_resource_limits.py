@@ -97,8 +97,9 @@ def test_config_set_on_a_read_only_config_dir_is_a_clean_config_error(
         exit_code=result.exit_code,
         output=result.output,
         allowed=frozenset({1, 5}),
-        token=CLEAN_CONFIG_TOKEN,
+        token="auth.json",
     )
+    assert "Config error" in result.output, result.output
 
 
 @NOT_ROOT
@@ -137,8 +138,9 @@ def test_a_read_only_data_dir_is_a_clean_error(state: w8.State) -> None:
         exit_code=result.exit_code,
         output=result.output,
         allowed=frozenset({1, 5}),
-        token="Error",
+        token="database",
     )
+    assert "Error" in result.output, result.output
 
 
 @NOT_ROOT
@@ -178,6 +180,28 @@ def test_a_fresh_unwritable_data_dir_is_a_named_storage_error(
     assert "cannot open database" in result.output, result.output
     assert str(state.db_path) in result.output, result.output
     assert not state.db_path.exists(), "nothing should be created on a read-only tree"
+
+
+# ── A read-only XDG state / log directory ───────────────────────────────────
+
+
+@NOT_ROOT
+def test_a_read_only_state_log_dir_only_degrades_logging(state: w8.State) -> None:
+    """``_init``'s log/state step is non-fatal: only file logging stops.
+
+    The rotating handler cannot be created under a read-only ``XDG_STATE_HOME``;
+    the warning goes to the stderr handler and the command still runs and writes.
+    """
+    with w8.read_only_dir(state.log_dir):
+        _assert_not_writable(state.log_dir)
+        result = invoke(["client", "add", "cz", "Client Z"])
+
+    assert result.exit_code == 0, result.output
+    assert TRACEBACK_TOKEN not in result.output, result.output
+    assert TRACEBACK_TOKEN not in result.stderr, result.stderr
+    assert "file logging disabled" in result.stderr, result.stderr
+    assert not (state.log_dir / "openreview.log").exists(), "the log file must not exist"
+    assert w8.count_rows(state.db_path, "clients") == 1
 
 
 # ── The second read-only-write seam: ``config set`` itself ──────────────────

@@ -286,7 +286,6 @@ def _expire_log_files(log_dir: Path, retention_days: int, *, now: float | None =
 def _init(debug: bool = False, verbose: bool = False) -> None:
     log_dir = get_log_dir()
     log_file = log_dir / "openreview.log"
-    log_dir.mkdir(parents=True, exist_ok=True)
     _level = _log_level(debug=debug, verbose=verbose)
     _fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     root = logging.getLogger()
@@ -317,11 +316,20 @@ def _init(debug: bool = False, verbose: bool = False) -> None:
     with contextlib.suppress(Exception):  # housekeeping never fails a command
         _expire_log_files(log_dir, _log_retention_days(config))
 
-    _fh = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=_LOG_MAX_BYTES, backupCount=_LOG_BACKUP_COUNT, encoding="utf-8"
-    )
-    _fh._openreview_owned = True  # type: ignore[attr-defined]
-    root.addHandler(_fh)
+    # File/state logging is non-fatal: an unwritable XDG_STATE_HOME must not
+    # abort the command, so the run continues with stderr-only logging.
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        _fh = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=_LOG_MAX_BYTES, backupCount=_LOG_BACKUP_COUNT, encoding="utf-8"
+        )
+    except OSError as exc:
+        logger.warning(
+            "file logging disabled: cannot write %s: %s", log_file, _format_exception(exc)
+        )
+    else:
+        _fh._openreview_owned = True  # type: ignore[attr-defined]
+        root.addHandler(_fh)
 
     install_on_root_handlers()
 
@@ -2926,7 +2934,9 @@ def graph_health(
         "--weights",
         "-w",
         help="Five custom weights: density depth orphans broken-refs coverage. "
-        "Space-separated, e.g. --weights '0.15 0.20 0.20 0.25 0.20'. "
+        "Defaults to '0 0 0.35 0.40 0.25': density and depth score nothing, so "
+        "the score measures missing parents, broken cross-refs and uncovered "
+        "definitions. Space-separated, e.g. --weights '0 0 0.35 0.40 0.25'. "
         "Auto-normalised to sum 1.0.",
     ),
     from_db: bool = typer.Option(False, "--from-db", help="Load graph from SQLite."),

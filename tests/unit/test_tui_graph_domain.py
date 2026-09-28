@@ -25,7 +25,7 @@ REAL_PDF = FIXTURES / "nda_with_pii.pdf"
 
 
 def test_real_fixture_reports_its_measured_numbers() -> None:
-    """The real NDA fixture parses to five flat clauses and a 98/100 score."""
+    """The real NDA fixture parses to five flat, defect-free clauses: 100/100."""
     summary = graph_summary_via_tui(REAL_PDF)
 
     assert summary.filename == "nda_with_pii.pdf"
@@ -37,7 +37,7 @@ def test_real_fixture_reports_its_measured_numbers() -> None:
     assert summary.metrics.orphan_ratio == 0.0
     assert summary.metrics.broken_ref_count == 0
     assert summary.metrics.definition_coverage == 1.0
-    assert summary.score == 98
+    assert summary.score == 100
 
 
 def test_missing_path_raises_file_not_found(tmp_path: Path) -> None:

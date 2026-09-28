@@ -13,7 +13,10 @@ from openreview_cli.pii.models import (
     PiiError,
     PiiResult,
 )
-from openreview_cli.pii.placeholders import assign_placeholders
+from openreview_cli.pii.placeholders import (
+    assign_placeholders,
+    entity_rank,
+)
 from openreview_cli.pii.recognizers import get_custom_recognizers
 
 _TEMP_PH = "[TEMP_0]"  # ponytail: placeholder overwritten by assign_placeholders
@@ -37,6 +40,23 @@ def _is_pattern_failure(exc: BaseException) -> bool:
             return True
         traceback = traceback.tb_next
     return False
+
+
+def resolve_overlapping_spans(entities: list[PiiEntity]) -> list[PiiEntity]:
+    """Keep exactly one entity per ``(start, end)`` span.
+
+    Two recognizers firing on the same characters are one piece of evidence, not
+    two: the join key is the SPAN, so a value legitimately occurring at two
+    different offsets keeps both detections. Candidates for a span are ordered so
+    a regex/pattern match outranks an NER inference, then the more specific type
+    wins (``PREFIX_PRIORITY``), then the higher score.
+    """
+    ranked = sorted(range(len(entities)), key=lambda i: entity_rank(entities[i]))
+    winner: dict[tuple[int, int], int] = {}
+    for index in ranked:
+        winner.setdefault((entities[index].start, entities[index].end), index)
+    kept = set(winner.values())
+    return [entity for index, entity in enumerate(entities) if index in kept]
 
 
 class PiiEngine:
@@ -147,7 +167,7 @@ class PiiEngine:
             )
             entities.append(entity)
 
-        return entities
+        return resolve_overlapping_spans(entities)
 
     def detect_all_pages(
         self,

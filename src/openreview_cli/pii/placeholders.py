@@ -25,7 +25,7 @@ PARTY_PREFIXES = {"PARTY"}
 
 #: Which entity-type prefix owns a value when two recognizers claim the same characters.
 #  Lower wins; unknown prefixes sort last; ties break deterministically by prefix name.
-_PREFIX_PRIORITY: dict[str, int] = {
+PREFIX_PRIORITY: dict[str, int] = {
     "TAX_ID": 0,
     "REG": 1,
     "ACCT": 2,
@@ -116,27 +116,34 @@ def _value_winners(groups: dict[str, list[Any]]) -> dict[str, str]:
     Candidates are ordered by the evidence the entity already carries: a
     regex/pattern match outranks an open-vocabulary NER inference on the same
     value regardless of the table, so an unenumerated structured type cannot
-    lose the span. Among same-source entities the ``_PREFIX_PRIORITY`` table
+    lose the span. Among same-source entities the ``PREFIX_PRIORITY`` table
     still picks the more specific type, with the score as the final tie-break.
     """
-    best: dict[str, tuple[tuple[Any, ...], str]] = {}
+    best: dict[str, tuple[tuple[bool, int, float, str], str]] = {}
     for prefix, group in groups.items():
         for entity in group:
             value = entity.original_value
-            rank = (
-                entity.source != "regex",
-                _prefix_rank(_get_prefix(entity)),
-                -float(entity.score or 0.0),
-                _get_prefix(entity),
-            )
+            rank = entity_rank(entity)
             current = best.get(value)
             if current is None or rank < current[0]:
                 best[value] = (rank, prefix)
     return {value: prefix for value, (_, prefix) in best.items()}
 
 
-def _prefix_rank(prefix: str) -> tuple[int, str]:
-    return (_PREFIX_PRIORITY.get(prefix, _UNKNOWN_PREFIX_RANK), prefix)
+def entity_rank(entity: Any) -> tuple[bool, int, float, str]:
+    """Ordering key shared by span de-duplication and value ownership.
+
+    A regex/pattern match outranks an open-vocabulary NER inference (``source !=
+    "regex"``), then the more specific prefix wins (``PREFIX_PRIORITY``), then the
+    higher score, then the entity type as a stable tie-break.
+    """
+    prefix = _get_prefix(entity)
+    return (
+        entity.source != "regex",
+        PREFIX_PRIORITY.get(prefix, _UNKNOWN_PREFIX_RANK),
+        -float(entity.score or 0.0),
+        entity.entity_type,
+    )
 
 
 def _get_prefix(entity: Any) -> str:
@@ -144,4 +151,4 @@ def _get_prefix(entity: Any) -> str:
     return PRESIDIO_TO_PREFIX.get(entity.entity_type, entity.entity_type)  # type: ignore[no-any-return]
 
 
-__all__ = ["PRESIDIO_TO_PREFIX", "assign_placeholders"]
+__all__ = ["PREFIX_PRIORITY", "PRESIDIO_TO_PREFIX", "assign_placeholders", "entity_rank"]
