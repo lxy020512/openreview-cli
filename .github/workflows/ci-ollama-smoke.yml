@@ -114,11 +114,14 @@ jobs:
             cat "/tmp/slot-${slot}.log"
             echo "::endgroup::"
             if [ "${code}" -ne 0 ]; then
-              # #175: the reranking model is not published in the Ollama library, so a
-              # reranking failure caused by the model being absent is NOT TESTABLE, not
-              # FAIL. Remove this exclusion once #175 is fixed.
+              # Reranking is not supported on Ollama. This is a documented limitation,
+              # not an open bug: litellm has no rerank provider branch for 'ollama' and
+              # Ollama exposes no rerank endpoint, so no Ollama model can serve the
+              # reranking slot. See docs/ARCHITECTURE.md "Honest limitations".
+              # Keep this exclusion for an Ollama reranking slot; it applies whenever
+              # the reranking model is absent from the local Ollama library.
               if [ "${slot}" = "reranking" ] && ! ollama list | grep -q "qwen3-reranker-0.6b"; then
-                echo "slot=reranking status=NOT_TESTABLE (model qwen3-reranker-0.6b not in Ollama; see #175)"
+                echo "slot=reranking status=NOT_TESTABLE (reranking is unsupported on Ollama; see docs/ARCHITECTURE.md)"
               else
                 failed="${failed} ${slot}"
               fi
