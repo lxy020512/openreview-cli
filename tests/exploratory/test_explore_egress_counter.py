@@ -15,25 +15,40 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from openreview_cli.gateway.models import ProviderInfo
 from openreview_cli.tui.domain import egress as eg
+
+# Deterministic registry: the classification must come from declared providers,
+# never from the developer's ~/.config/openreview/models.json.
+_REGISTRY = {
+    "ollama": ProviderInfo(name="ollama", is_local=True, base_url="http://localhost:11434/v1"),
+    "lmstudio": ProviderInfo(name="lmstudio", base_url="http://localhost:1234/v1"),
+    "openai": ProviderInfo(name="openai", base_url="https://api.openai.com/v1"),
+    "anthropic": ProviderInfo(name="anthropic", base_url="https://api.anthropic.com"),
+}
 
 
 def _patch(monkeypatch: pytest.MonkeyPatch, *, tier: str, slots: dict) -> None:
     monkeypatch.setattr(eg, "read_privacy_tier", lambda: tier)
     monkeypatch.setattr(eg, "get_slot_configs", lambda: slots)
+    monkeypatch.setattr(eg, "load_registry", lambda: dict(_REGISTRY))
 
 
 # ── _is_cloud classification ───────────────────────────────────────────────
 
 
 @pytest.mark.fast
-def test_is_cloud_matches_only_literal_ollama_and_local() -> None:
-    """FINDING (edge case): ``_LOCAL_PREFIXES`` is misnamed — matching is an
-    exact, case-sensitive set membership, not a prefix scan.  Other common
-    locally-hosted runtimes (``lmstudio``, ``vllm``, ``localai``) and even
-    ``"Ollama"`` are classified as *cloud*."""
+def test_is_cloud_reads_the_registry_not_a_name_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_is_cloud`` classifies from the registry (base_url/is_local), so the old
+    name allowlist is wrong in both directions: an undeclared ``"local"`` is now
+    cloud, and a locally-hosted runtime nobody declared stays cloud too."""
+    registry = {k: v for k, v in _REGISTRY.items() if k in ("ollama", "openai", "anthropic")}
+    monkeypatch.setattr(eg, "load_registry", lambda: registry)
+
     assert eg._is_cloud("ollama") is False
-    assert eg._is_cloud("local") is False
+    assert eg._is_cloud("local") is True  # the name is no longer evidence
     assert eg._is_cloud("") is False
     for provider in ("openai", "anthropic", "localai", "lmstudio", "vllm", "Ollama", "ollama2"):
         assert eg._is_cloud(provider) is True, provider
@@ -47,7 +62,7 @@ def test_is_cloud_matches_only_literal_ollama_and_local() -> None:
     ("provider", "model", "expected_cloud_warning", "expected_dest"),
     [
         ("ollama", "qwen3:8b", False, "ollama/qwen3:8b"),
-        ("local", "llama", False, "local/llama"),
+        ("lmstudio", "m", False, "lmstudio/m"),
         ("openai", "gpt-4o-mini", True, "openai/gpt-4o-mini"),
         ("anthropic", "claude-3", True, "anthropic/claude-3"),
     ],

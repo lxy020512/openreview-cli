@@ -8,12 +8,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from openreview_cli.retrieval.errors import MalformedChunkError
+from openreview_cli.retrieval.errors import IndexCorruptError, MalformedChunkError
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
     from openreview_cli.gateway.router import Gateway
+    from openreview_cli.retrieval.storage import RetrievalStorage
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +182,19 @@ def _normalize_chunk(
     return normalized
 
 
+def _index_meta_or_none(storage: RetrievalStorage) -> dict[str, Any] | None:
+    """Read the index metadata just written; a read failure must not fail ingest.
+
+    An ingest that has just written the index must not fail on a read of itself,
+    so ``IndexCorruptError`` falls back to the synthesised metadata built by the
+    caller (issue #118).
+    """
+    try:
+        return storage.get_index_meta()
+    except IndexCorruptError:
+        return None
+
+
 def ingest_document(
     chunks: list[dict[str, Any]] | Iterator[dict[str, Any]],
     db_path: str | Path,
@@ -331,7 +345,7 @@ def ingest_document(
         doc_id = resolved_doc_id
         _save_last_indexed(db_path.parent, str(db_path), doc_id)
 
-        meta = storage.get_index_meta()
+        meta = _index_meta_or_none(storage)
         if meta is None:
             return {
                 "document_id": resolved_doc_id,

@@ -1,6 +1,7 @@
 import contextlib
 import json
 import logging
+import logging.handlers
 import re
 import sqlite3
 import sys
@@ -234,6 +235,54 @@ def _emit_reviews(
         typer.echo("⚠  Some clauses flagged Amber — review recommended.", err=True)
 
 
+# Bound per segment, and the number of rotated segments kept beside it: the log
+# family is capped at _LOG_MAX_BYTES * (_LOG_BACKUP_COUNT + 1), whatever the
+# retention window says. Retention is a ceiling applied on top, never a raise.
+_LOG_MAX_BYTES = 10 * 1024 * 1024
+_LOG_BACKUP_COUNT = 5
+_LOG_RETENTION_DEFAULT_DAYS = 30
+
+
+def _log_retention_days(config: dict[str, Any]) -> int:
+    """The effective log retention: the shorter of the two declared windows.
+
+    ``privacy.log_ttl_days`` is the privacy-motivated ceiling and must not be
+    weakened by ``storage.logs_keep_days``; ``min`` can only shorten retention.
+    A missing or non-positive value falls back to the default window.
+    """
+
+    def _days(section: str, key: str) -> int:
+        try:
+            value = int(config[section][key])
+        except (KeyError, TypeError, ValueError):
+            return _LOG_RETENTION_DEFAULT_DAYS
+        return value if value > 0 else _LOG_RETENTION_DEFAULT_DAYS
+
+    return min(_days("privacy", "log_ttl_days"), _days("storage", "logs_keep_days"))
+
+
+def _expire_log_files(log_dir: Path, retention_days: int, *, now: float | None = None) -> int:
+    """Delete rotated log segments that cannot contain an entry newer than the window.
+
+    Only rotated segments (``openreview.log.N``) are candidates: the active
+    ``openreview.log`` is never unlinked, even when stale, because a long-lived
+    process (the TUI) may still hold it open. A segment's mtime is its last
+    write, so ``mtime < cutoff`` implies every entry in it is older than the
+    window. A file whose content is younger than the cutoff is left alone.
+    Returns the number of files removed.
+    """
+    cutoff = (time.time() if now is None else now) - retention_days * 86400
+    removed = 0
+    for path in log_dir.glob("openreview.log.[0-9]*"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            logger.debug("could not expire log segment %s", path, exc_info=True)
+    return removed
+
+
 def _init(debug: bool = False, verbose: bool = False) -> None:
     log_dir = get_log_dir()
     log_file = log_dir / "openreview.log"
@@ -250,15 +299,11 @@ def _init(debug: bool = False, verbose: bool = False) -> None:
         if getattr(_h, "_openreview_owned", False):
             root.removeHandler(_h)
             _h.close()
-    _fh = logging.FileHandler(log_file, encoding="utf-8")
-    _fh._openreview_owned = True  # type: ignore[attr-defined]
-    root.addHandler(_fh)
+
     _sh = logging.StreamHandler(sys.stderr)
     _sh.setFormatter(_fmt)
     _sh._openreview_owned = True  # type: ignore[attr-defined]
     root.addHandler(_sh)
-
-    install_on_root_handlers()
 
     config_dir = get_config_dir()
     from pydantic import ValidationError
@@ -269,17 +314,29 @@ def _init(debug: bool = False, verbose: bool = False) -> None:
         config_error(str(exc))
     logger.info("config loaded")
 
-    ensure_auth(config_dir)
+    with contextlib.suppress(Exception):  # housekeeping never fails a command
+        _expire_log_files(log_dir, _log_retention_days(config))
+
+    _fh = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=_LOG_MAX_BYTES, backupCount=_LOG_BACKUP_COUNT, encoding="utf-8"
+    )
+    _fh._openreview_owned = True  # type: ignore[attr-defined]
+    root.addHandler(_fh)
+
+    install_on_root_handlers()
+
+    try:
+        ensure_auth(config_dir)
+    except OSError as exc:
+        config_error(f"cannot write {config_dir / 'auth.json'}: {_format_exception(exc)}")
     logger.info("auth configured")
 
     data_dir = get_data_dir()
     db_path = data_dir / "openreview.db"
     try:
         init_database(db_path)
-    except sqlite3.OperationalError:
-        raise
     except sqlite3.DatabaseError as exc:
-        fail(f"cannot open database {db_path}: {exc}", EXIT_USER_ERROR)
+        fail(f"cannot open database {db_path}: {_format_exception(exc)}", EXIT_USER_ERROR)
     logger.info("database initialized")
 
     _cleanup_expired_pii(data_dir)
@@ -511,7 +568,7 @@ def config_set(key: str, value: str) -> None:
     try:
         set_config_value(config_path, key, value)
         typer.echo(f"updated {key} = {value}")
-    except (KeyError, ValidationError) as e:
+    except (KeyError, ValidationError, OSError) as e:
         config_error(str(e))
 
 
@@ -2464,6 +2521,7 @@ def index_status(
     """Show indexing status for a document."""
 
     from openreview_cli.retrieval.engine import RetrievalEngine
+    from openreview_cli.retrieval.errors import IndexCorruptError
     from openreview_cli.retrieval.ingest import _ensure_db_dir
 
     if not file:
@@ -2485,7 +2543,11 @@ def index_status(
         raise typer.Exit(code=2)
 
     engine = RetrievalEngine(db_path)
-    meta = engine.get_index_meta()
+    try:
+        meta = engine.get_index_meta()
+    except IndexCorruptError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=3) from None
     if meta is None:
         size = db_path.stat().st_size if db_path.exists() else 0
         typer.echo(f"Index file exists but metadata not found ({size} bytes).")

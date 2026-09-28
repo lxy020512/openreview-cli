@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -40,6 +41,21 @@ class ProviderInfo(BaseModel):
     models: dict[str, ModelEntry] = {}
     # ponytail: default [] keeps single-key providers backward compatible (FR-2)
     credentials: list[CredentialField] = Field(default_factory=list)
+
+
+def classify_provider(model: ProviderInfo) -> str:
+    """Return "local" if the provider runs locally, else "cloud"."""
+    if model.is_local:
+        return "local"
+    if model.base_url:
+        try:
+            host = urlparse(model.base_url).hostname or ""
+        except Exception as exc:  # pragma: no cover - urlparse is robust
+            raise ValueError(f"cannot classify provider {model.name!r}: {exc}") from exc
+        if host in ("localhost", "127.0.0.1"):
+            return "local"
+        return "cloud"
+    raise ValueError(f"cannot classify provider {model.name!r}: no base_url and not local")
 
 
 class ModelEntry(BaseModel):

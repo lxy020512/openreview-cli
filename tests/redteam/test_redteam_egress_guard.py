@@ -629,19 +629,29 @@ def test_a_tier_approved_local_override_is_not_sent_to_a_cloud_host(
     assert "anthropic.com" not in (recorder.records[0].api_base or "")
 
 
-# ── The TUI egress summary, which classifies by name only ───────────────────
+# ── The TUI egress summary, which classifies from the registry ──────────────
 
 
-def test_is_cloud_classifies_by_name_and_cannot_see_base_url(
+def test_is_cloud_classifies_from_the_registry_not_from_the_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """RT-030 pinned: ``_is_cloud`` is a two-name allowlist, not a base_url test."""
+    """RT-030 fixed: ``_is_cloud`` reads the registry, not a name allowlist.
+
+    ``ollama`` is local because the registry declares it so; ``local`` is not in
+    the registry, so it is cloud — the old allowlist's false negative.
+    """
+    from openreview_cli.gateway.models import ProviderInfo
     from openreview_cli.tui.domain import egress
 
+    registry = {
+        "ollama": ProviderInfo(name="ollama", is_local=True, base_url="http://localhost:11434/v1"),
+    }
+    monkeypatch.setattr(egress, "load_registry", lambda: registry)
+
     assert egress._is_cloud("ollama") is False
-    assert egress._is_cloud("local") is False
-    # A genuine local provider reached through `gateway provider add --base-url
-    # http://localhost:1234/v1` (lmstudio/localai): base_url is local, name is not.
+    assert egress._is_cloud("local") is True
+    # Undeclared runtime names are cloud too: they have no registry entry, and a
+    # name nobody declared cannot be asserted to be local.
     for name in ("lmstudio", "localai", "vllm", "llama-cpp"):
         with monkeypatch.context() as ctx:
             ctx.setattr(
@@ -654,22 +664,52 @@ def test_is_cloud_classifies_by_name_and_cannot_see_base_url(
         assert summary.cloud_warning is True, name
 
 
-@pytest.mark.xfail(strict=True, reason="RT-030")
+def test_egress_summary_does_not_claim_cloud_for_a_registry_local_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The false-positive twin: a base_url-local provider is not a cloud destination."""
+    from openreview_cli.gateway.models import ProviderInfo
+    from openreview_cli.tui.domain import egress
+
+    monkeypatch.setattr(
+        egress,
+        "load_registry",
+        lambda: {"lmstudio": ProviderInfo(name="lmstudio", base_url="http://localhost:1234/v1")},
+    )
+    monkeypatch.setattr(
+        egress, "get_slot_configs", lambda: {"extraction": {"provider": "lmstudio", "model": "m"}}
+    )
+    monkeypatch.setattr(egress, "read_privacy_tier", lambda: "maximum")
+
+    summary = egress.build_egress_summary(disable_pii=True, extraction_model="extraction")
+
+    assert summary.destinations == ("lmstudio/m",)
+    assert summary.cloud_warning is False
+
+
 def test_egress_summary_does_not_claim_cloud_for_a_local_provider(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Expected: a local provider reached by name is not reported as a cloud destination.
+    """A provider the registry resolves as local is not a cloud destination.
 
     ``gateway provider add --name lmstudio --base-url http://localhost:1234/v1``
-    is a real local provider (``classify_provider`` returns "local" from its
-    hostname) that ``_is_cloud`` cannot recognise.
+    is a real local provider that ``classify_provider`` returns "local" for. The
+    registry is patched so the verdict cannot depend on the developer's
+    ``~/.config/openreview/models.json``, while the reachability of the real
+    bundled ``ollama`` entry is still asserted.
     """
     _w5.prepare_state(monkeypatch, tmp_path)
+    from openreview_cli.gateway.models import ProviderInfo
     from openreview_cli.gateway.registry import load_registry
     from openreview_cli.tui.domain import egress
 
     info = load_registry().get("ollama")
     assert info is not None and info.is_local is True
+    monkeypatch.setattr(
+        egress,
+        "load_registry",
+        lambda: {"lmstudio": ProviderInfo(name="lmstudio", base_url="http://localhost:1234/v1")},
+    )
     monkeypatch.setattr(
         egress, "get_slot_configs", lambda: {"extraction": {"provider": "lmstudio", "model": "m"}}
     )
@@ -680,13 +720,17 @@ def test_egress_summary_does_not_claim_cloud_for_a_local_provider(
     assert summary.cloud_warning is False
 
 
-@pytest.mark.xfail(strict=True, reason="RT-030")
 def test_egress_summary_warns_when_a_cloud_provider_is_named_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Expected: a remote provider named ``local`` still raises the egress warning."""
+    """A remote provider named ``local`` still raises the egress warning.
+
+    ``local`` is not in the registry, so it is unresolvable and therefore cloud —
+    the name is not evidence of locality.
+    """
     from openreview_cli.tui.domain import egress
 
+    monkeypatch.setattr(egress, "load_registry", dict)
     monkeypatch.setattr(
         egress, "get_slot_configs", lambda: {"extraction": {"provider": "local", "model": "m"}}
     )

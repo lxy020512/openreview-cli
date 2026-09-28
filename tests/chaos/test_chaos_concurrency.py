@@ -52,6 +52,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner, Result
@@ -67,6 +68,7 @@ from openreview_cli.gateway.router import (
     pii_available,
     reset_pii_available,
 )
+from openreview_cli.storage import database
 from openreview_cli.storage.database import get_connection, init_database
 from tests.chaos import _w8_probe as w8
 
@@ -390,11 +392,6 @@ def _has_client(db_path: Path, client_id: str) -> bool:
         conn.close()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a CLI start blocked by another writer's migration reports an unhandled "
-    "OperationalError('database is locked') instead of a clean error (RT-049)",
-)
 def test_a_cli_start_racing_an_open_migration_transaction_is_a_clean_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -410,18 +407,19 @@ def test_a_cli_start_racing_an_open_migration_transaction_is_a_clean_error(
     assert_clean_database_failure(exit_code=result.exit_code, output=result.output)
 
 
-def test_a_cli_start_racing_an_open_migration_transaction_crashes_locked(
+def test_a_cli_start_racing_an_open_migration_transaction_is_a_named_database_error_after_the_retry(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Characterisation pinning the defect in ``storage/database.py:12``.
+    """The journal-mode change is retried; on exhaustion the failure is named.
 
-    ``_init`` (``app.py:264``) runs ``init_database`` before any subcommand, which
-    opens a connection and executes ``PRAGMA journal_mode=WAL`` while another
-    connection holds a write transaction on a non-WAL file. SQLite returns
-    ``SQLITE_BUSY`` and does not invoke the busy handler for a journal-mode change,
-    so the pragma fails in 0.00 s even with a 2 s ``busy_timeout``. Observed: exit 1,
-    ``result.exception`` IS the ``OperationalError``, ``result.output == ""``, the
-    schema was never migrated (``user_version == 0``) and the write is lost.
+    ``_init`` runs ``init_database`` before any subcommand, which executes
+    ``PRAGMA journal_mode=WAL`` while another connection holds a write transaction
+    on a non-WAL file. SQLite returns ``SQLITE_BUSY`` and does not invoke the busy
+    handler for a journal-mode change, so ``_enable_wal`` retries with backoff
+    (5 attempts, 0.2 s linear). The holder keeps its transaction open for the whole
+    ``invoke``, so the retry exhausts and ``_init``'s ``sqlite3.DatabaseError``
+    branch reports it: exit 1, a message that names the database, and nothing
+    written.
     """
     state = w8.prepare_state(monkeypatch, tmp_path, migrate=False)
     holder = _hold_migration_write_lock(state.db_path)
@@ -431,12 +429,102 @@ def test_a_cli_start_racing_an_open_migration_transaction_crashes_locked(
         holder.rollback()
         holder.close()
 
-    assert result.exit_code == 1, result.output
-    assert isinstance(result.exception, sqlite3.OperationalError), repr(result.exception)
-    assert "locked" in str(result.exception), str(result.exception)
-    assert result.output == "", repr(result.output)
+    assert_clean_database_failure(exit_code=result.exit_code, output=result.output)
+    assert "locked" in result.output.lower(), result.output
     assert w8.user_version(state.db_path) == 0, "migrations should not have run"
     assert not _has_client(state.db_path, "w8c-cold"), "the blocked write landed anyway"
+
+
+# ── _enable_wal: the bounded retry itself (design C4) ───────────────────────────
+
+
+def test_enable_wal_retries_a_locked_journal_mode_change(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The pragma succeeds once the competing writer releases its lock.
+
+    The holder (created and released on the main thread) keeps ``BEGIN IMMEDIATE``
+    open for ~0.1 s, so the worker's first attempt fails "locked", ``_enable_wal``
+    sleeps 0.2 s and the next attempt sees a free database. ``sleeps`` is asserted
+    non-empty so this node actually exercises a retry rather than passing vacuously
+    if the first attempt happened to win the race.
+    """
+    db_path = tmp_path / "openreview.db"
+    holder = _hold_migration_write_lock(db_path)
+    sleeps: list[float] = []
+    real_sleep = time.sleep
+
+    def _record_and_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        real_sleep(seconds)  # keep the retry delay so the holder can release
+
+    monkeypatch.setattr(database, "time", SimpleNamespace(sleep=_record_and_sleep))
+    modes: list[str] = []
+    errors: list[BaseException] = []
+
+    def _attempt() -> None:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            database._enable_wal(conn)
+            modes.append(str(conn.execute("PRAGMA journal_mode").fetchone()[0]))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            conn.close()
+
+    worker = threading.Thread(target=_attempt)
+    worker.start()
+    time.sleep(0.1)
+    holder.rollback()
+    worker.join(timeout=10.0)
+    holder.close()
+
+    assert not errors, errors
+    assert modes == ["wal"]
+    assert sleeps, "the first attempt won the race; no retry was exercised"
+
+
+def test_enable_wal_exhausts_its_retry_budget_and_re_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A persistently locked pragma is tried at most 5 times, then re-raised."""
+    db_path = tmp_path / "openreview.db"
+    holder = _hold_migration_write_lock(db_path)
+    sleeps: list[float] = []
+    monkeypatch.setattr(database, "time", SimpleNamespace(sleep=sleeps.append))
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            database._enable_wal(conn)
+    finally:
+        conn.close()
+        holder.rollback()
+        holder.close()
+
+    # One sleep between each pair of attempts: N attempts, N-1 backoffs.
+    assert len(sleeps) == database._WAL_RETRY_ATTEMPTS - 1
+
+
+def test_enable_wal_does_not_retry_a_non_lock_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A readonly / unable-to-open error raises on the first attempt, no sleep."""
+    calls: list[str] = []
+
+    class _ReadonlyConnection:
+        def execute(self, sql: str) -> None:
+            calls.append(sql)
+            raise sqlite3.OperationalError("attempt to write a readonly database")
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(database, "time", SimpleNamespace(sleep=sleeps.append))
+
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        database._enable_wal(_ReadonlyConnection())  # type: ignore[arg-type]
+
+    assert len(calls) == 1
+    assert sleeps == []
 
 
 # ── Negative controls for the multi-process and clean-failure oracles ───────────

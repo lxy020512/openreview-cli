@@ -224,12 +224,11 @@ def test_search_returns_nothing_for_a_query_with_no_terms_in_the_document(
 # A physically malformed index file
 # --------------------------------------------------------------------------
 #
-# ``RetrievalStorage.get_index_meta`` catches only ``sqlite3.OperationalError``,
-# and a malformed image fails earlier, as a plain ``sqlite3.DatabaseError``
-# raised by ``PRAGMA journal_mode=WAL`` in ``RetrievalStorage.conn`` - so
-# nothing downstream stops it. Uncaught it reaches Textual's
-# ``_handle_exception``, whose documented behaviour is app exit with a
-# traceback; and the file *exists*, so it is not the "not indexed" state either.
+# ``RetrievalStorage.get_index_meta`` converts a malformed image's
+# ``sqlite3.DatabaseError`` - raised by ``PRAGMA journal_mode=WAL`` in
+# ``RetrievalStorage.conn`` - into ``IndexCorruptError`` itself; the adapter's
+# ``except sqlite3.DatabaseError`` is a backstop for any other read. The file
+# *exists*, so it is not the "not indexed" state either.
 
 
 def test_index_meta_reports_a_malformed_file_as_a_damaged_index(

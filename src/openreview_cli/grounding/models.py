@@ -104,9 +104,8 @@ class CGReport:
                 GroundingVerdict.UNCERTAIN,
             ):
                 logger.warning(
-                    "Claim #%d '%s' excluded: %s in clause %s",
+                    "Claim #%d excluded: %s in clause %s",
                     idx,
-                    assessment.clause_text[:40],
                     result.reason or result.verdict.value,
                     assessment.citation,
                 )

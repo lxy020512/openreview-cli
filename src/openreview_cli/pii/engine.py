@@ -21,6 +21,24 @@ _TEMP_PH = "[TEMP_0]"  # ponytail: placeholder overwritten by assign_placeholder
 logger = logging.getLogger(__name__)
 
 
+def _is_pattern_failure(exc: BaseException) -> bool:
+    """True when ``exc`` escaped a pattern (regex) recognizer, not the NLP engine.
+
+    The recognizer executing when the exception was raised is read off the
+    traceback: custom and Presidio pattern recognizers are the only ones whose
+    frames carry a ``PatternRecognizer`` ``self``. No recognizer evidence returns
+    False, leaving the caller to fall back to its previous answer.
+    """
+    from presidio_analyzer import PatternRecognizer
+
+    traceback = exc.__traceback__
+    while traceback is not None:
+        if isinstance(traceback.tb_frame.f_locals.get("self"), PatternRecognizer):
+            return True
+        traceback = traceback.tb_next
+    return False
+
+
 class PiiEngine:
     """PII detection and stripping engine wrapping Presidio analyzer + anonymizer."""
 
@@ -32,6 +50,18 @@ class PiiEngine:
     def _ensure_analyzer(self) -> Any:
         if self._analyzer is not None:
             return self._analyzer
+
+        # Pin tldextract to the bundled public-suffix snapshot before any recognizer runs.
+        # Presidio's EmailRecognizer.validate_result() calls tldextract.extract(), which
+        # otherwise fetches the suffix list over HTTPS with timeout=None and only tolerates
+        # requests.RequestException — a blocked socket (RuntimeError) escapes and takes the
+        # whole PII phase with it. An empty suffix_list_urls means no egress, no unbounded
+        # connect, no environment dependency. extract() looks TLD_EXTRACTOR up in the
+        # implementation module at call time, so setting it here covers every recognizer.
+        import tldextract
+        import tldextract.tldextract as _tldextract_impl
+
+        _tldextract_impl.TLD_EXTRACTOR = tldextract.TLDExtract(suffix_list_urls=())
 
         from presidio_analyzer import AnalyzerEngine
         from presidio_analyzer.nlp_engine import SpacyNlpEngine
@@ -88,7 +118,12 @@ class PiiEngine:
             if is_non_english:
                 results = [r for r in results if r.score >= 1.0]
         except Exception as exc:
-            phase = "regex phase" if is_non_english else "NER phase"
+            # The clause language says nothing about which recognizer failed: English clauses
+            # run pattern (regex) recognizers too. A pattern recognizer that raises is a
+            # "regex phase" failure on any language; with no recognizer evidence, keep the
+            # old language-based label.
+            is_regex_failure = _is_pattern_failure(exc) or is_non_english
+            phase = "regex phase" if is_regex_failure else "NER phase"
             heading = clause_heading or "Unknown"
             raise PiiError(
                 exit_code=9,
@@ -128,6 +163,7 @@ class PiiEngine:
         failed_pages: list[int] = []
         error_messages: dict[int, str] = {}
         successful_pages: list[int] = []
+        first_failure: Exception | None = None
 
         sorted_clauses = sorted(
             clauses,
@@ -175,6 +211,8 @@ class PiiEngine:
             except Exception as exc:
                 failed_pages.append(clause_page)
                 error_messages[clause_page] = str(exc)
+                if first_failure is None:
+                    first_failure = exc
 
             overlap_buffer = clause.text[-50:] if len(clause.text) >= 50 else clause.text
 
@@ -194,7 +232,7 @@ class PiiEngine:
                 failed_pages=sorted(set(failed_pages)),
                 successful_pages=successful_pages,
                 error_messages=error_messages,
-            )
+            ) from first_failure
 
         return all_entities, warnings, sorted(set(failed_pages)), error_messages
 

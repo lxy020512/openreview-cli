@@ -5,7 +5,6 @@ import os
 import time
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
 
 import httpx
 import litellm
@@ -38,6 +37,7 @@ from openreview_cli.gateway.models import (
     PrivacyTierReport,
     ProviderInfo,
     StreamingOutputEvent,
+    classify_provider,
     get_total_cloud_calls,
     record_cloud_call,
     reset_total_cloud_calls,
@@ -50,10 +50,16 @@ from openreview_cli.storage.costs import check_daily_limit, check_session_limit
 
 logger = logging.getLogger(__name__)
 
-# Explicit re-exports (mypy no_implicit_reexport): the process-wide cloud-call
-# counter now lives in the litellm-free ``gateway.models``; re-export it here so
-# existing importers (``review.base``, ``app``, tests) keep working.
-__all__ = ["get_total_cloud_calls", "record_cloud_call", "reset_total_cloud_calls"]
+# Explicit re-exports (mypy no_implicit_reexport): the cloud-call counter and the
+# provider classifier live in the litellm-free ``gateway.models`` — the classifier
+# had to move there so the TUI can classify egress without pulling litellm (#145).
+# Re-exported here so existing importers (``review.base``, ``app``, tests) keep working.
+__all__ = [
+    "classify_provider",
+    "get_total_cloud_calls",
+    "record_cloud_call",
+    "reset_total_cloud_calls",
+]
 
 # Track env vars seeded across all Gateway instances so long-lived
 # processes (TUI) can clean them up without holding a Gateway reference.
@@ -88,21 +94,6 @@ def reset_pii_available() -> None:
 def pii_available() -> bool:
     """Return whether a PII strip succeeded in this process."""
     return _pii_available
-
-
-def classify_provider(model: ProviderInfo) -> str:
-    """Return "local" if the provider runs locally, else "cloud"."""
-    if model.is_local:
-        return "local"
-    if model.base_url:
-        try:
-            host = urlparse(model.base_url).hostname or ""
-        except Exception as exc:  # pragma: no cover - urlparse is robust
-            raise ValueError(f"cannot classify provider {model.name!r}: {exc}") from exc
-        if host in ("localhost", "127.0.0.1"):
-            return "local"
-        return "cloud"
-    raise ValueError(f"cannot classify provider {model.name!r}: no base_url and not local")
 
 
 _PROTECTED_KEYS = frozenset({"model", "messages", "input", "timeout"})

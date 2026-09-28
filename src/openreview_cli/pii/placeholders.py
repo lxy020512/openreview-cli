@@ -23,6 +23,25 @@ PRESIDIO_TO_PREFIX = {
 
 PARTY_PREFIXES = {"PARTY"}
 
+#: Which entity-type prefix owns a value when two recognizers claim the same characters.
+#  Lower wins; unknown prefixes sort last; ties break deterministically by prefix name.
+_PREFIX_PRIORITY: dict[str, int] = {
+    "TAX_ID": 0,
+    "REG": 1,
+    "ACCT": 2,
+    "ID": 3,
+    "AMOUNT": 4,
+    "PHONE": 5,
+    "EMAIL": 6,
+    "CC": 7,
+    "IP": 8,
+    "PARTY": 9,
+    "NAME": 10,
+    "ADDRESS": 11,
+    "DATE": 12,
+}
+_UNKNOWN_PREFIX_RANK = 100
+
 
 def assign_placeholders(  # noqa: PLR0912
     entities: list[Any], metadata_entities: list[Any] | None = None
@@ -76,7 +95,48 @@ def assign_placeholders(  # noqa: PLR0912
                     if entity.original_value == val:
                         entity.placeholder = placeholder
 
+    # One value, one placeholder: when several recognizers claim the same characters with
+    # different types, the most specific type keeps the value and the others reuse its
+    # placeholder. strip_pii replaces every occurrence of a value globally, so one
+    # placeholder still redacts them all, and no entity leaves the list.
+    winner = _value_winners(groups)
+    mapping = {
+        key: value for key, value in mapping.items() if winner[value] == key.rsplit("_", 1)[0]
+    }
+    placeholders = {value: f"[{key}]" for key, value in mapping.items()}
+    for entity in all_entities:
+        entity.placeholder = placeholders[entity.original_value]
+
     return mapping, all_entities
+
+
+def _value_winners(groups: dict[str, list[Any]]) -> dict[str, str]:
+    """Return the prefix that owns each value when more than one claims it.
+
+    Candidates are ordered by the evidence the entity already carries: a
+    regex/pattern match outranks an open-vocabulary NER inference on the same
+    value regardless of the table, so an unenumerated structured type cannot
+    lose the span. Among same-source entities the ``_PREFIX_PRIORITY`` table
+    still picks the more specific type, with the score as the final tie-break.
+    """
+    best: dict[str, tuple[tuple[Any, ...], str]] = {}
+    for prefix, group in groups.items():
+        for entity in group:
+            value = entity.original_value
+            rank = (
+                entity.source != "regex",
+                _prefix_rank(_get_prefix(entity)),
+                -float(entity.score or 0.0),
+                _get_prefix(entity),
+            )
+            current = best.get(value)
+            if current is None or rank < current[0]:
+                best[value] = (rank, prefix)
+    return {value: prefix for value, (_, prefix) in best.items()}
+
+
+def _prefix_rank(prefix: str) -> tuple[int, str]:
+    return (_PREFIX_PRIORITY.get(prefix, _UNKNOWN_PREFIX_RANK), prefix)
 
 
 def _get_prefix(entity: Any) -> str:

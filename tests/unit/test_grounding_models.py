@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 import pytest
 
@@ -445,3 +447,98 @@ class TestDiscriminationAuditEntry:
             reason="Boundary case",
         )
         assert isinstance(entry.timestamp, datetime)
+
+
+class _RecordingHandler(logging.Handler):
+    """A handler that keeps every record it is given, for the negative control."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+class TestStrictRemovalLogging:
+    """#160: the strict-mode exclusion log must never carry clause text."""
+
+    _CANARY = "CANARYCLAUSETEXT-" + "x" * 80
+
+    def _build(self) -> tuple[CGReport, Any]:
+        from openreview_cli.review.models import (
+            ClauseAssessment,
+            DocMeta,
+            Position,
+            QAVerdict,
+            ReviewReport,
+            ReviewSummary,
+        )
+
+        assessment = ClauseAssessment(
+            clause_id="4.3",
+            clause_text=self._CANARY,
+            playbook_category="confidentiality",
+            position=Position.PREFERRED,
+            confidence=0.9,
+            citation="4.3",
+            qa_verdict=QAVerdict.agree,
+            extraction_model="test",
+            qa_model="test",
+        )
+        report = ReviewReport(
+            document=DocMeta(filename="test.pdf", page_count=1, clause_count=1, pii_stripped=False),
+            assessments=[assessment],
+            summary=ReviewSummary(),
+            playbook_id="test",
+            generated_at=datetime.now(),
+        )
+        cg_report = CGReport(
+            verdicts=[
+                GroundingResult(
+                    claim_index=0,
+                    verdict=GroundingVerdict.UNGROUNDED,
+                    provenances=[],
+                    reason="Not found",
+                )
+            ],
+            mode="strict",
+            metrics=CGMetrics(
+                citation_precision=0.0, citation_relevance=0.0, citation_locality=0.0
+            ),
+            total_claims=1,
+            grounded_count=0,
+            ungrounded_count=1,
+            uncertain_count=0,
+        )
+        return cg_report, report
+
+    def test_strict_removal_logs_reason_and_citation_but_no_clause_text(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cg_report, report = self._build()
+
+        with caplog.at_level("WARNING", logger="openreview_cli.grounding.models"):
+            cg_report.merge_into(report)
+
+        assert "Claim #0" in caplog.text
+        assert "Not found" in caplog.text
+        assert "4.3" in caplog.text
+        assert self._CANARY not in caplog.text
+        assert self._CANARY[:40] not in caplog.text
+
+    def test_negative_control_a_canary_reaches_a_recording_handler(self) -> None:
+        """The canary *is* observable through the same logger when it is logged.
+
+        Proves the absence assertion above is not vacuous: were ``clause_text``
+        re-added to the warning, this is the path that would surface it.
+        """
+        handler = _RecordingHandler()
+        grounding_logger = logging.getLogger("openreview_cli.grounding.models")
+        grounding_logger.addHandler(handler)
+        try:
+            grounding_logger.warning("canary %s", self._CANARY)
+        finally:
+            grounding_logger.removeHandler(handler)
+
+        assert any(self._CANARY in record.getMessage() for record in handler.records)

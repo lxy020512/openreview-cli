@@ -43,8 +43,8 @@ _NO_DOCUMENT_MESSAGE = (
 )
 _NO_CLAUSES_MESSAGE = "No clauses detected in this document."
 _HIERARCHY_CAVEAT = (
-    "No clause hierarchy was detected in this document (clause parsers assign no "
-    "parent section), so this score is near-maximal for almost any flat graph."
+    "No clause hierarchy was detected in this document (this document declares no "
+    "section hierarchy), so this score is near-maximal for almost any flat graph."
 )
 
 

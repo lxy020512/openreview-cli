@@ -136,8 +136,10 @@ class DocxParser:
             self.author, self.title, self.company = docx_metadata(doc)
 
         from openreview_cli.parsing.clause_detector import (
+            _extract_numbering_level,
             count_paragraphs,
             detect_clause_starts,
+            link_parent_ids,
             nupunkt_detect_boundaries,
         )
 
@@ -179,14 +181,13 @@ class DocxParser:
                     )
                 return
 
-            cuts = sorted({cs[0] for cs in clause_starts} | {hb[0] for hb in heading_boundaries})
+            cuts = sorted(
+                {cs[0] for cs in clause_starts} | {hb[0] for hb in heading_boundaries}
+            ) or [0]
 
-            if not cuts:
-                cuts = [0]
-
-            cut_positions = sorted(cuts)
-            for i, cut in enumerate(cut_positions):
-                end = cut_positions[i + 1] if i + 1 < len(cut_positions) else len(all_text)
+            open_levels: list[tuple[int, str]] = []
+            for i, cut in enumerate(cuts):
+                end = cuts[i + 1] if i + 1 < len(cuts) else len(all_text)
                 span_text = all_text[cut:end].strip()
                 if not span_text:
                     continue
@@ -194,12 +195,18 @@ class DocxParser:
                 heading_match = [hb for hb in heading_boundaries if hb[0] == cut]
                 title = heading_match[0][2] if heading_match else None
                 level = heading_match[0][1] if heading_match else 0
+                # Independent of the preserved Clause.level above: the linker's level
+                # falls back to the numbering level when there is no heading match.
+                link_level = (
+                    heading_match[0][1]
+                    if heading_match
+                    else _extract_numbering_level(span_text.splitlines()[0])
+                )
 
                 matching_paras = [(o, t, pi) for (o, t, pi) in para_offsets if o >= cut and o < end]
                 first_para_idx = matching_paras[0][2] if matching_paras else 0
 
-                pc = count_paragraphs(span_text)
-                yield Clause(
+                clause = Clause(
                     id=f"clause-{i}",
                     title=title,
                     text=span_text,
@@ -208,8 +215,14 @@ class DocxParser:
                     source_page=None,
                     source_paragraph=first_para_idx,
                     source_span=(cut, end),
-                    paragraph_count=pc,
+                    paragraph_count=count_paragraphs(span_text),
                 )
+                link_parent_ids(
+                    [clause],
+                    open_levels,
+                    levels=[link_level],
+                )
+                yield clause
 
         except GeneratorExit:
             pass

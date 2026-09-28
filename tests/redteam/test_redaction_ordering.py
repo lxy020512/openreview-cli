@@ -1,10 +1,10 @@
 """W6 red-team suite: the redaction install ordering must not fail open.
 
-``install_on_root_handlers`` is imported at ``src/openreview_cli/app.py:18`` and
-called at ``app.py:254`` — AFTER ``_init`` creates its FileHandler and
-StreamHandler (``app.py:246-252``). It attaches a ``RedactingFilter`` to the root
-handlers that exist *at the moment it runs* (``gateway/redaction.py:52-61``), so
-a handler added later is never filtered. This is an ordering attack, deliberately
+``install_on_root_handlers`` is imported at ``src/openreview_cli/app.py:26`` and
+called at ``app.py:324`` — AFTER ``_init`` creates its StreamHandler and
+RotatingFileHandler (``app.py:301-322``). It attaches a ``RedactingFilter`` to the
+root handlers that exist *at the moment it runs* (``gateway/redaction.py:52-61``),
+so a handler added later is never filtered. This is an ordering attack, deliberately
 not the end state: the suite drives orderings that bypass the filter and checks
 whether the key survives.
 
@@ -92,7 +92,7 @@ def test_handler_added_after_install_bypasses_redaction() -> None:
     ``install_on_root_handlers`` never receives the ``RedactingFilter``, so a
     raw-key record reaches it unredacted. Asserted present so this file records
     the hole; the product's own ``_init`` avoids it by installing last
-    (``app.py:246-254``).
+    (``app.py:301-324``).
     """
     from openreview_cli.gateway.redaction import install_on_root_handlers
 

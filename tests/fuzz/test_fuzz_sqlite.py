@@ -172,17 +172,19 @@ def test_retrieval_marked_corrupt_index_is_index_corrupt(tmp_path: Path) -> None
     assert isinstance(exc.value, RetrievalError)
 
 
-def test_damaged_index_file_is_not_misreported(tmp_path: Path) -> None:
-    """Pre-existing issue #118, deduped — not refiled by W4.
+def test_damaged_index_file_is_reported_as_index_corrupt(tmp_path: Path) -> None:
+    """Issue #118: a damaged index must be reported as corrupt, not traceback.
 
-    ``RetrievalStorage.get_index_meta`` (``retrieval/storage.py:224-233``) catches
-    only ``sqlite3.OperationalError``; a damaged file raises ``sqlite3.DatabaseError``
-    from the connection PRAGMA first. This test pins the current outcome class so a
-    future fix is noticed.
+    ``RetrievalStorage.get_index_meta`` used to catch only
+    ``sqlite3.OperationalError``; a damaged file raises ``sqlite3.DatabaseError``
+    from the connection PRAGMA first, so the caller got a raw traceback. The read
+    now distinguishes "not indexed" (``None``) from "exists but unreadable"
+    (``IndexCorruptError``).
     """
     path = corpus_state.corrupt_sqlite(tmp_path)
-    with pytest.raises(sqlite3.DatabaseError):
+    with pytest.raises(IndexCorruptError) as exc:
         RetrievalStorage(path).get_index_meta()
+    assert isinstance(exc.value, RetrievalError)
 
 
 # ── Negative control: the oracle must be able to fail ───────────────────────

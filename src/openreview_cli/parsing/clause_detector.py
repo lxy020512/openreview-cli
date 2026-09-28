@@ -1,4 +1,5 @@
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from openreview_cli.parsing.models import Clause
@@ -30,10 +31,12 @@ def nupunkt_detect_boundaries(text: str) -> list[Any]:
 
 
 _NUMBERING_PATTERNS = [
-    (r"^\s*(?:ARTICLE|Article|SECTION|Section)\s+(?:[IVXLCDM]+|\d+)[:\s.]", 0),
-    (r"^\s*(?:Clause|clause)\s+\d+", 0),
-    (r"^\s*\d+\.(?:\d+\.)*\s", 1),
-    (r"^\s*Section\s+\d+\.\d+", 1),
+    (r"^\s*(?:ARTICLE|Article|SECTION|Section)\s+[IVXLCDM]+\b", 0),
+    (r"^\s*(?:ARTICLE|Article|SECTION|Section)\s+\d+\.\d+", 1),
+    (r"^\s*(?:ARTICLE|Article|SECTION|Section)\s+\d+\b", 0),
+    (r"^\s*(?:Clause|clause)\s+\d+(?:\.\d+)*", 0),
+    (r"^\s*\d+(?:\.\d+)+\b", 1),
+    (r"^\s*\d+\.\s", 0),
     (r"^\s*\([a-z]\)", 2),
     (r"^\s*\(\d+\)", 2),
     (r"^\s*\([ivxlcdm]+\)", 2),
@@ -45,6 +48,12 @@ def detect_numbering_pattern(line: str) -> dict[str, Any] | None:
         if re.match(pattern, line.strip()):
             return {"level": level, "pattern": pattern}
     return None
+
+
+def _extract_numbering_level(line: str) -> int | None:
+    """Return the numbering level of *line*, or None when it declares no number."""
+    match = detect_numbering_pattern(line)
+    return match["level"] if match else None
 
 
 def detect_clause_starts(text: str) -> list[tuple[int, dict[str, Any]]]:
@@ -156,3 +165,29 @@ def build_hierarchy(
             counter += 1
 
     return clauses
+
+
+def link_parent_ids(
+    clauses: Sequence[Clause],
+    open_levels: list[tuple[int, str]],
+    *,
+    levels: Sequence[int | None] | None = None,
+) -> None:
+    """Set ``Clause.parent_id`` from each clause's numbering level (0 = top).
+
+    ``levels`` supplies the level per clause (the DOCX parser passes its heading
+    level where it has one; the PDF parser passes the numbering level). ``None``
+    is an unlevelled clause: it attaches to the deepest open ancestor if one is
+    open, and never becomes an ancestor itself. The stack is a parameter, not a
+    local, so the PDF parser's page loop can carry it across pages -- a section
+    that opens on page 3 must parent the clauses on page 4.
+    """
+    for index, clause in enumerate(clauses):
+        level = levels[index] if levels is not None else None
+        if level is None:
+            clause.parent_id = open_levels[-1][1] if open_levels else None
+            continue
+        while open_levels and open_levels[-1][0] >= level:
+            open_levels.pop()
+        clause.parent_id = open_levels[-1][1] if open_levels else None
+        open_levels.append((level, clause.id))

@@ -6,7 +6,9 @@ from typing import cast
 
 import pytest
 
-from openreview_cli.retrieval.ingest import clear_index, index_exists
+from openreview_cli.retrieval.engine import RetrievalEngine
+from openreview_cli.retrieval.errors import IndexCorruptError
+from openreview_cli.retrieval.ingest import clear_index, index_exists, ingest_document
 from openreview_cli.retrieval.storage import RetrievalStorage
 
 SAMPLE_CHUNK = {
@@ -277,6 +279,33 @@ class TestIndexMeta:
         assert meta["document_id"] == "doc-hash"
         assert meta["method"] == "hybrid"
         assert meta["embedding_model"] == "nomic-embed-text"
+
+
+def _truncated_index(path: Path) -> Path:
+    """Build a real index, then truncate it to half its length (#118's damage)."""
+    ingest_document([dict(SAMPLE_CHUNK)], path, method="sparse")
+    raw = path.read_bytes()
+    path.write_bytes(raw[: len(raw) // 2])
+    return path
+
+
+class TestIndexMetaCorruption:
+    """Issue #118: "not indexed", "empty" and "corrupt" are three separate answers."""
+
+    def test_fresh_empty_database_is_not_indexed(self, db_path: Path) -> None:
+        # A zero-byte file is SQLite's empty-database state: no index_meta table.
+        assert RetrievalStorage(db_path).get_index_meta() is None
+
+    def test_truncated_index_is_reported_as_corrupt(self, db_path: Path) -> None:
+        _truncated_index(db_path)
+        with pytest.raises(IndexCorruptError) as exc:
+            RetrievalStorage(db_path).get_index_meta()
+        assert str(db_path) in str(exc.value)
+
+    def test_truncated_index_through_the_engine_is_corrupt(self, db_path: Path) -> None:
+        _truncated_index(db_path)
+        with pytest.raises(IndexCorruptError):
+            RetrievalEngine(db_path).get_index_meta()
 
 
 class TestClearIndex:

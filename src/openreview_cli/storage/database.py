@@ -1,6 +1,7 @@
 import logging
 import re
 import sqlite3
+import time
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -9,10 +10,32 @@ MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
+_WAL_RETRY_ATTEMPTS = 5
+_WAL_RETRY_DELAY_S = 0.2
+
+
+def _enable_wal(conn: sqlite3.Connection) -> None:
+    """Set WAL, retrying only the "database is locked" case.
+
+    SQLite does not invoke the busy handler for a journal-mode change while
+    another connection holds a transaction, so this is a bounded retry, not a
+    timeout. Every other OperationalError (readonly, unable to open) raises on
+    the first attempt.
+    """
+    for attempt in range(_WAL_RETRY_ATTEMPTS):
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc) or attempt == _WAL_RETRY_ATTEMPTS - 1:
+                raise
+            time.sleep(_WAL_RETRY_DELAY_S * (attempt + 1))
+        else:
+            return
+
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA journal_mode=WAL")
+    _enable_wal(conn)
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
     return conn

@@ -10,6 +10,26 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
+
+from openreview_cli.gateway.models import ProviderInfo
+
+# Deterministic registry: classification must never read the developer's
+# ~/.config/openreview/models.json. Only the providers these tests declare.
+_REGISTRY = {
+    "ollama": ProviderInfo(name="ollama", is_local=True, base_url="http://localhost:11434/v1"),
+    "openai": ProviderInfo(name="openai", base_url="https://api.openai.com/v1"),
+    "anthropic": ProviderInfo(name="anthropic", base_url="https://api.anthropic.com"),
+}
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_registry(monkeypatch) -> None:
+    from openreview_cli.tui.domain import egress
+
+    monkeypatch.setattr(egress, "load_registry", lambda: dict(_REGISTRY))
+
+
 # ── Summary construction ──────────────────────────────────────────────
 
 
@@ -156,6 +176,56 @@ def test_egress_summary_lines_flag_disabled_pii(monkeypatch) -> None:
     )
     lines = egress.build_egress_summary(disable_pii=True, extraction_model="extraction").lines()
     assert any("PII stripped before egress: NO" in line for line in lines)
+
+
+# ── Registry-driven classification ────────────────────────────────────
+
+
+def test_is_cloud_classifies_from_an_injected_registry() -> None:
+    """#145/C7: registry membership and base_url decide, not the provider name."""
+    from openreview_cli.tui.domain import egress
+
+    registry = {
+        "custom-local": ProviderInfo(name="custom-local", base_url="http://localhost:1234/v1"),
+        "remote-named-local": ProviderInfo(
+            name="remote-named-local", base_url="https://api.example.com/v1"
+        ),
+        "bedrock-like": ProviderInfo(name="bedrock-like", is_local=False, base_url=None),
+    }
+    assert egress._is_cloud("custom-local", registry) is False
+    assert egress._is_cloud("remote-named-local", registry) is True
+    assert egress._is_cloud("bedrock-like", registry) is True  # ValueError -> cloud
+    assert egress._is_cloud("undeclared", {}) is True
+    assert egress._is_cloud("", registry) is False
+
+
+def test_build_egress_summary_loads_the_registry_once(monkeypatch) -> None:
+    """#145/C8: one registry read per summary, however many destinations."""
+    from openreview_cli.tui.domain import egress
+
+    calls: list[int] = []
+
+    def counting_load_registry() -> dict[str, ProviderInfo]:
+        calls.append(1)
+        return dict(_REGISTRY)
+
+    monkeypatch.setattr(egress, "load_registry", counting_load_registry)
+    monkeypatch.setattr(egress, "read_privacy_tier", lambda: "performance")
+    monkeypatch.setattr(
+        egress,
+        "get_slot_configs",
+        lambda: {
+            "extraction": {"provider": "openai", "model": "gpt-4o-mini"},
+            "qa": {"provider": "anthropic", "model": "claude-3"},
+        },
+    )
+
+    summary = egress.build_egress_summary(
+        disable_pii=True, extraction_model="extraction", qa_model="qa"
+    )
+
+    assert summary.destinations == ("openai/gpt-4o-mini", "anthropic/claude-3")
+    assert len(calls) == 1
 
 
 # ── Litellm-free guard ────────────────────────────────────────────────
