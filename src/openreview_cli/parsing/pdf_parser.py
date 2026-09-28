@@ -56,8 +56,10 @@ class PdfParser:
         import pymupdf
 
         from openreview_cli.parsing.clause_detector import (
+            _extract_numbering_level,
             build_hierarchy,
             detect_clause_starts,
+            link_parent_ids,
             nupunkt_detect_boundaries,
         )
         from openreview_cli.parsing.models import ParseError
@@ -133,6 +135,7 @@ class PdfParser:
         try:
             clause_counter = 0
             has_text = False
+            open_levels: list[tuple[int, str]] = []
 
             page_iter = iter(doc)
             page_num = 0
@@ -169,6 +172,10 @@ class PdfParser:
                     clauses = build_hierarchy(
                         boundaries, clause_starts, headings, page_num, clause_counter, page_text
                     )
+                    levels = [
+                        _extract_numbering_level(clause.text.splitlines()[0]) for clause in clauses
+                    ]
+                    link_parent_ids(clauses, open_levels, levels=levels)
                     for clause in clauses:
                         if clause.id:
                             clause_counter += 1

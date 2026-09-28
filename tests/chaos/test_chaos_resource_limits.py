@@ -84,7 +84,6 @@ def _assert_not_writable(path: Path) -> None:
     assert not os.access(path, os.W_OK), f"the read-only guard did not take: {path}"
 
 
-@pytest.mark.xfail(strict=True, reason="RT-048")
 @NOT_ROOT
 def test_config_set_on_a_read_only_config_dir_is_a_clean_config_error(
     state: w8.State,
@@ -98,36 +97,36 @@ def test_config_set_on_a_read_only_config_dir_is_a_clean_config_error(
         exit_code=result.exit_code,
         output=result.output,
         allowed=frozenset({1, 5}),
-        token="Error",
+        token="auth.json",
     )
+    assert "Config error" in result.output, result.output
 
 
 @NOT_ROOT
-def test_config_set_on_a_read_only_config_dir_escapes_today(state: w8.State) -> None:
-    """Characterisation pinning RT-048.
+def test_config_set_on_a_read_only_config_dir_is_a_clean_config_error_and_names_auth_json(
+    state: w8.State,
+) -> None:
+    """The auth write in ``_init`` is guarded, not left to escape.
 
-    The unguarded write fires inside ``_init`` *before* the command: ``_init``
-    calls ``ensure_auth(config_dir)`` (``app.py:260`` so the fresh tree has no
-    ``auth.json``), and ``write_auth`` opens it with ``os.open``
-    (``auth.py:72``) — raising ``PermissionError`` on a read-only config dir.
-    (A second, latent gap sits in ``config_set`` itself, which catches only
-    ``(KeyError, ValidationError)`` — ``app.py:493``.) Observed: exit 1,
-    ``result.exception`` IS the ``PermissionError``, and ``result.output == ""``
-    — no traceback reaches the user because nothing at all reaches the user.
+    ``_init`` calls ``ensure_auth(config_dir)`` before the command, and on a
+    fresh tree ``write_auth`` opens ``auth.json`` with ``os.open``
+    (``auth.py:72``), raising ``PermissionError`` on a read-only config dir.
+    The new ``except OSError`` routes that to ``config_error`` — whose message
+    names the file that could not be written.
     """
     with w8.read_only_dir(state.config_dir):
         _assert_not_writable(state.config_dir)
         result = invoke(["config", "set", "privacy.tier", "maximum"])
 
-    assert result.exit_code == 1, result.output
-    assert isinstance(result.exception, PermissionError), repr(result.exception)
-    assert result.output == "", repr(result.output)
+    assert result.exit_code == 5, result.output
+    assert TRACEBACK_TOKEN not in result.output, result.output
+    assert CLEAN_CONFIG_TOKEN in result.output, result.output
+    assert "auth.json" in result.output, result.output
 
 
 # ── A read-only / unwritable data directory ─────────────────────────────────
 
 
-@pytest.mark.xfail(strict=True, reason="RT-047")
 @NOT_ROOT
 def test_a_read_only_data_dir_is_a_clean_error(state: w8.State) -> None:
     """Expected: every command fails with a code from ``errors.py`` and a message."""
@@ -139,47 +138,98 @@ def test_a_read_only_data_dir_is_a_clean_error(state: w8.State) -> None:
         exit_code=result.exit_code,
         output=result.output,
         allowed=frozenset({1, 5}),
-        token="Error",
+        token="database",
     )
+    assert "Error" in result.output, result.output
 
 
 @NOT_ROOT
-def test_a_read_only_existing_database_escapes_with_no_message(
+def test_a_read_only_existing_database_is_a_named_storage_error(
     state: w8.State,
 ) -> None:
-    """Characterisation pinning RT-047: ``_init`` runs unguarded before the command.
+    """``_init`` routes every ``sqlite3.DatabaseError`` to the named failure.
 
-    ``_init`` (``app.py:264``) calls ``init_database`` before any subcommand, and
-    the first thing ``get_connection`` does is ``PRAGMA journal_mode=WAL``
-    (``database.py:12``), which needs to create ``-wal``/``-shm`` files in the
-    directory. Observed: exit 1, ``result.exception`` IS the ``OperationalError``
-    ("attempt to write a readonly database"), output empty.
+    ``init_database`` runs before any subcommand and the first thing
+    ``get_connection`` does is a WAL journal-mode change, which needs to create
+    ``-wal``/``-shm`` files in the directory. On a read-only data dir SQLite
+    raises ``OperationalError("attempt to write a readonly database")`` — now a
+    clean exit 1 whose message names the database path.
     """
     with w8.read_only_dir(state.data_dir):
         _assert_not_writable(state.data_dir)
         result = invoke(["client", "add", "cx", "Client X"])
 
-    assert result.exit_code == 1
-    assert isinstance(result.exception, sqlite3.OperationalError), repr(result.exception)
-    assert "readonly" in str(result.exception) or "unable to open" in str(result.exception)
-    assert result.output == "", repr(result.output)
+    assert result.exit_code == 1, result.output
+    assert TRACEBACK_TOKEN not in result.output, result.output
+    assert "cannot open database" in result.output, result.output
+    assert str(state.db_path) in result.output, result.output
 
 
 @NOT_ROOT
-def test_a_fresh_unwritable_data_dir_escapes_with_no_message(
+def test_a_fresh_unwritable_data_dir_is_a_named_storage_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The database cannot even be created: the same unguarded ``_init`` path."""
+    """The database cannot even be created: the same named, exit-1 failure."""
     state = w8.prepare_state(monkeypatch, tmp_path, migrate=False)
     with w8.read_only_dir(state.data_dir):
         _assert_not_writable(state.data_dir)
         result = invoke(["client", "add", "cy", "Client Y"])
 
-    assert result.exit_code == 1
-    assert isinstance(result.exception, sqlite3.OperationalError), repr(result.exception)
-    assert "unable to open" in str(result.exception), str(result.exception)
-    assert result.output == "", repr(result.output)
-    assert not state.db_path.exists(), "the database should not exist on a read-only tree"
+    assert result.exit_code == 1, result.output
+    assert TRACEBACK_TOKEN not in result.output, result.output
+    assert "cannot open database" in result.output, result.output
+    assert str(state.db_path) in result.output, result.output
+    assert not state.db_path.exists(), "nothing should be created on a read-only tree"
+
+
+# ── A read-only XDG state / log directory ───────────────────────────────────
+
+
+@NOT_ROOT
+def test_a_read_only_state_log_dir_only_degrades_logging(state: w8.State) -> None:
+    """``_init``'s log/state step is non-fatal: only file logging stops.
+
+    The rotating handler cannot be created under a read-only ``XDG_STATE_HOME``;
+    the warning goes to the stderr handler and the command still runs and writes.
+    """
+    with w8.read_only_dir(state.log_dir):
+        _assert_not_writable(state.log_dir)
+        result = invoke(["client", "add", "cz", "Client Z"])
+
+    assert result.exit_code == 0, result.output
+    assert TRACEBACK_TOKEN not in result.output, result.output
+    assert TRACEBACK_TOKEN not in result.stderr, result.stderr
+    assert "file logging disabled" in result.stderr, result.stderr
+    assert not (state.log_dir / "openreview.log").exists(), "the log file must not exist"
+    assert w8.count_rows(state.db_path, "clients") == 1
+
+
+# ── The second read-only-write seam: ``config set`` itself ──────────────────
+
+
+@NOT_ROOT
+def test_config_set_on_a_read_only_config_dir_names_the_error_with_auth_present(
+    state: w8.State,
+) -> None:
+    """With ``auth.json`` present, ``_init``'s auth write early-returns.
+
+    The failure then comes from ``set_config_value``'s backup + write
+    (``loader.py:327,337``), which raise ``OSError`` on a read-only config dir.
+    ``config_set`` must route that to ``config_error`` (exit 5) and leave
+    ``config.yml`` untouched.
+    """
+    state.auth_path.write_text("{}", encoding="utf-8")
+    state.auth_path.chmod(0o600)
+    before = state.config_path.read_text(encoding="utf-8")
+
+    with w8.read_only_dir(state.config_dir):
+        _assert_not_writable(state.config_dir)
+        result = invoke(["config", "set", "privacy.tier", "maximum"])
+
+    assert result.exit_code == 5, result.output
+    assert TRACEBACK_TOKEN not in result.output, result.output
+    assert "Config error" in result.output, result.output
+    assert state.config_path.read_text(encoding="utf-8") == before
 
 
 # ── A failing write through the W0 fault table ──────────────────────────────

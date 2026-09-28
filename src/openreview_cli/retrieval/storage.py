@@ -5,6 +5,8 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from openreview_cli.retrieval.errors import IndexCorruptError
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -222,7 +224,11 @@ class RetrievalStorage:
         self.conn.commit()
 
     def get_index_meta(self) -> dict[str, Any] | None:
-        """Read index metadata row, or None if not yet populated."""
+        """Read index metadata row, or None if not yet populated.
+
+        Raises:
+            IndexCorruptError: the file exists but SQLite cannot read it as a database.
+        """
         try:
             cursor = self.conn.execute("SELECT * FROM index_meta")
             row = cursor.fetchone()
@@ -231,6 +237,11 @@ class RetrievalStorage:
             return dict(row)
         except sqlite3.OperationalError:
             return None
+        except sqlite3.DatabaseError as exc:
+            raise IndexCorruptError(
+                f"Index database at {self.db_path} is damaged and cannot be read: {exc}. "
+                "Re-run `openreview ingest <file>` to rebuild."
+            ) from exc
 
     def insert_rerank_validation(
         self,

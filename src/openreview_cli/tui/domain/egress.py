@@ -1,18 +1,18 @@
 """Egress summary — what a review will send to external providers (Phase 4).
 
-litellm-free: reads slot config and privacy tier only, so the TUI can build the
-pre-flight view without importing the gateway router.
+litellm-free: reads slot config, privacy tier and the provider registry, so the
+TUI can build the pre-flight view without importing the gateway router.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
+from openreview_cli.gateway.models import ProviderInfo, classify_provider
+from openreview_cli.gateway.registry import load_registry
 from openreview_cli.tui.domain.gateway import get_slot_configs
 from openreview_cli.tui.domain.privacy import read_privacy_tier
-
-# Providers known to run on this machine; anything else is treated as cloud.
-_LOCAL_PREFIXES = ("ollama", "local")
 
 
 @dataclass(frozen=True)
@@ -45,9 +45,25 @@ class EgressSummary:
         return out
 
 
-def _is_cloud(provider: str) -> bool:
-    """Return True when a provider is not known to run locally."""
-    return bool(provider) and provider not in _LOCAL_PREFIXES
+def _is_cloud(provider: str, registry: Mapping[str, ProviderInfo] | None = None) -> bool:
+    """Return True when a provider is not known to run on this machine.
+
+    Classification comes from the registry (``base_url`` / ``is_local``), the same
+    source the gateway's tier gate uses. An unresolvable provider is cloud: a name
+    nobody declared cannot be asserted to be local, and the gateway fails closed on
+    the same state. An empty name is not a destination.
+    """
+    if not provider:
+        return False
+    if registry is None:
+        registry = load_registry()
+    info = registry.get(provider)
+    if info is None:
+        return True
+    try:
+        return classify_provider(info) != "local"
+    except ValueError:
+        return True
 
 
 def _slot_names(extraction_model: str, qa_model: str | None) -> tuple[str, ...]:
@@ -77,7 +93,8 @@ def build_egress_summary(
             if dest not in dests:
                 dests.append(dest)
 
-    has_cloud = any(_is_cloud(d.split("/", 1)[0]) for d in dests)
+    registry = load_registry()
+    has_cloud = any(_is_cloud(d.split("/", 1)[0], registry) for d in dests)
     return EgressSummary(
         privacy_tier=read_privacy_tier(),
         pii_stripped=not disable_pii,

@@ -7,6 +7,10 @@
     {
       "path": "scripts/benchmark_pii_stripping.py",
       "sha256": "5a19e0c44505ad0e20f16c5a773f9cb10d9e12451261c43df97b145551c36f39"
+    },
+    {
+      "path": "src/openreview_cli/pii/engine.py",
+      "sha256": "1150b25b44db4605eff5ac35536b03b92ca897705aafbcb39d762f666f586606"
     }
   ],
   "models": "none (local Presidio + spaCy en_core_web_lg)",
@@ -20,11 +24,11 @@
     "total_documents": 54,
     "success": 54,
     "failed": 0,
-    "total_entities_detected": 1918,
+    "total_entities_detected": 1857,
     "total_duration_s": 73.906,
     "docs_per_min": 44,
     "stress": {
-      "entity_count": 395,
+      "entity_count": 346,
       "duration_s": 2.3823,
       "peak_memory_rss_mb": 1723.9
     }

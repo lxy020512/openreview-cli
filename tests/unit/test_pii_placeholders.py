@@ -82,3 +82,42 @@ def test_case_insensitive_sorting() -> None:
     mapping, _ = assign_placeholders([a, b])
     assert mapping["NAME_1"] == "Alice"
     assert mapping["NAME_2"] == "bob"
+
+
+def test_overlapping_types_emit_one_placeholder_for_the_value() -> None:
+    """Two recognizers on the same characters must produce one placeholder (#115)."""
+    tax = _make_entity("TAX_ID", "11-7654320", source="regex")
+    date = _make_entity("DATE_TIME", "11-7654320")
+    mapping, entities = assign_placeholders([tax, date])
+    assert mapping == {"TAX_ID_1": "11-7654320"}
+    assert entities[0].placeholder == "[TAX_ID_1]"
+    assert entities[1].placeholder == "[TAX_ID_1]"
+
+
+def test_losing_type_reuses_the_winning_placeholder() -> None:
+    """The losing entity stays in the list and points at the winner's placeholder."""
+    reg = _make_entity("REG_NUMBER", "REG-100001", source="regex")
+    party = _make_entity("ORGANIZATION", "REG-100001")
+    mapping, entities = assign_placeholders([reg, party])
+    assert mapping == {"REG_1": "REG-100001"}
+    assert len(entities) == 2
+    assert all(e.placeholder == "[REG_1]" for e in entities)
+
+
+def test_more_specific_type_wins_over_party() -> None:
+    party = _make_entity("ORGANIZATION", "ACME")
+    date = _make_entity("DATE_TIME", "ACME")
+    mapping, entities = assign_placeholders([date, party])
+    assert mapping == {"PARTY_A": "ACME"}
+    assert all(e.placeholder == "[PARTY_A]" for e in entities)
+
+
+def test_value_claimed_by_a_more_specific_type_loses_its_own_number() -> None:
+    tax = _make_entity("TAX_ID", "11-7654320")
+    date = _make_entity("DATE_TIME", "11-7654320")
+    other_date = _make_entity("DATE_TIME", "1971-05-02")
+    mapping, _ = assign_placeholders([tax, date, other_date])
+    assert mapping["TAX_ID_1"] == "11-7654320"
+    assert "DATE_1" not in mapping  # the tax id is no longer a DATE
+    assert "1971-05-02" in mapping.values()
+    assert sum(1 for value in mapping.values() if value == "11-7654320") == 1

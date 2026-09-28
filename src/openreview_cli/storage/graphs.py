@@ -23,6 +23,7 @@ def _ensure_graph_tables(conn: sqlite3.Connection) -> None:
         "  label TEXT NOT NULL,"
         "  position TEXT,"
         "  metadata_json TEXT DEFAULT '{}',"
+        "  parent_id TEXT,"
         "  UNIQUE(contract_id, node_id)"
         ")"
     )
@@ -53,14 +54,15 @@ def save_graph(db_path: Path, contract_id: str, graph: Any) -> None:
         # Insert nodes
         for node in graph.nodes.values():
             conn.execute(
-                "INSERT INTO graph_nodes (contract_id, node_id, label, position, metadata_json) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO graph_nodes (contract_id, node_id, label, position, metadata_json, parent_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     contract_id,
                     node.id,
                     node.label,
                     str(node.level),
                     json.dumps(node.metadata, default=str),
+                    node.parent_id,
                 ),
             )
 
@@ -93,7 +95,7 @@ def load_graph(db_path: Path, contract_id: str) -> Any | None:
             (contract_id,),
         ).fetchone()
         node_rows = conn.execute(
-            "SELECT node_id, label, position, metadata_json FROM graph_nodes "
+            "SELECT node_id, label, position, metadata_json, parent_id FROM graph_nodes "
             "WHERE contract_id = ? ORDER BY node_id",
             (contract_id,),
         ).fetchall()
@@ -114,6 +116,7 @@ def load_graph(db_path: Path, contract_id: str) -> Any | None:
                 text="",
                 level=int(r["position"]) if r["position"] else 0,
                 metadata=metadata,
+                parent_id=r["parent_id"],
             )
 
         edge_rows = conn.execute(

@@ -68,12 +68,21 @@ class TestRenderTree:
         graph = ContractGraph(
             nodes={
                 "c1": GraphNode("c1", "Article 1", "Article text", 0),
-                "c2": GraphNode("c2", "Section 1.1", "Section text", 1),
+                "c2": GraphNode("c2", "Section 1.1", "Section text", 1, parent_id="missing"),
             },
             edges=[GraphEdge("c1", "c2", EdgeType.parent_child)],
         )
         output = render_tree(graph)
         assert "[ORPHAN]" in output
+
+    def test_cross_ref_to_a_missing_section_does_not_crash(self) -> None:
+        """A cross_ref edge whose target is not a node renders without raising."""
+        graph = ContractGraph(
+            nodes={"c1": GraphNode("c1", "Article 1", "See Section 9.9.", 0)},
+            edges=[GraphEdge("c1", "missing-section-9.9", EdgeType.cross_ref)],
+        )
+        output = render_tree(graph)
+        assert "[1 refs out]" in output
 
     def test_empty_graph_empty_output(self) -> None:
         graph = ContractGraph()

@@ -45,10 +45,21 @@ class TestNormaliseWeights:
 
 
 class TestComputeHealth:
-    def test_perfect_graph_scores_98(self) -> None:
-        """Perfect metrics score 98 because depth=1 gives c2=0.9 (penalty)."""
+    def test_perfect_graph_scores_100(self) -> None:
+        """A defect-free document scores 100: density and depth score nothing."""
         result = compute_health(_perfect_metrics())
-        assert result.score == 98
+        assert result.score == 100
+
+    def test_rich_structure_still_scores_100(self) -> None:
+        """Density and depth are reported but not penalised under default weights."""
+        rich = GraphMetrics(
+            density=1.0,
+            max_depth=10,
+            orphan_ratio=0.0,
+            broken_ref_count=0,
+            definition_coverage=1.0,
+        )
+        assert compute_health(rich).score == 100
 
     def test_pathological_graph_scores_0(self) -> None:
         result = compute_health(_pathological_metrics())
@@ -68,7 +79,7 @@ class TestComputeHealth:
 
     def test_all_zero_weights_fall_back(self) -> None:
         result = compute_health(_perfect_metrics(), weights=[0.0, 0.0, 0.0, 0.0, 0.0])
-        assert result.score == 98
+        assert result.score == 100
 
     def test_wrong_weight_count_raises(self) -> None:
         with pytest.raises(ValueError, match="Expected 5 weights"):

@@ -102,3 +102,12 @@ class TestComputeGraphDiff:
         assert diff.added_edges == []
         assert diff.removed_edges == []
         assert diff.relabeled_nodes == []
+
+    def test_edge_whose_target_is_not_a_node_does_not_crash(self) -> None:
+        """A cross_ref edge to a non-node id diffs without a KeyError."""
+        g1 = _make_graph(["1"], edges=[("1", "missing-section-9.9", "cross_ref")])
+        g2 = _make_graph(["1"])
+        diff = compute_graph_diff(g1, g2)
+        assert len(diff.removed_edges) == 1
+        assert diff.removed_edges[0].target_id == "missing-section-9.9"
+        assert diff.added_edges == []

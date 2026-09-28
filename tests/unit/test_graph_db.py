@@ -117,3 +117,47 @@ class TestSaveLoadGraph:
         assert len(loaded.nodes) == 1
         assert loaded.nodes["n1"].label == "Solo"
         assert len(loaded.edges) == 0
+
+    def test_parent_id_survives_the_db_round_trip(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "test.db"
+        init_database(db_path)
+        graph = ContractGraph(
+            nodes={
+                "c1": GraphNode(id="c1", label="Article 1", text="...", level=0),
+                "c2": GraphNode(id="c2", label="Section 1.1", text="...", level=1, parent_id="c1"),
+            },
+            edges=[GraphEdge(source_id="c1", target_id="c2", edge_type=EdgeType.parent_child)],
+        )
+        save_graph(db_path, "rt", graph)
+        loaded = load_graph(db_path, "rt")
+        assert loaded is not None
+        assert loaded.nodes["c1"].parent_id is None
+        assert loaded.nodes["c2"].parent_id == "c1"
+        assert loaded.orphan_ids == []
+
+    def test_dangling_declared_parent_still_scores_below_100_after_the_db_hop(
+        self, tmp_path: Path
+    ) -> None:
+        """The orphan signal must survive persistence, not vanish at the DB hop."""
+        from openreview_cli.graph.health import compute_health
+        from openreview_cli.graph.metrics import compute_metrics
+
+        db_path = tmp_path / "test.db"
+        init_database(db_path)
+        graph = ContractGraph(
+            nodes={
+                "c1": GraphNode(id="c1", label="Article 1", text="...", level=0),
+                "c2": GraphNode(
+                    id="c2", label="Section 1.1", text="...", level=1, parent_id="missing"
+                ),
+            },
+            edges=[],
+        )
+        assert graph.orphan_ids == ["c2"]
+        assert compute_health(compute_metrics(graph)).score < 100
+
+        save_graph(db_path, "dangling", graph)
+        loaded = load_graph(db_path, "dangling")
+        assert loaded is not None
+        assert loaded.orphan_ids == ["c2"]
+        assert compute_health(compute_metrics(loaded)).score < 100

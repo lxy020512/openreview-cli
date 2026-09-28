@@ -83,6 +83,11 @@ def _values_match(gt_value: str, det_value: str) -> bool:
     return not set(gt_tokens).isdisjoint(set(det_tokens))
 
 
+def _type_matches(gt_type: str, det_type: str) -> bool:
+    """Return True when two entity type labels are the same, case-insensitively."""
+    return gt_type.strip().upper() == det_type.strip().upper()
+
+
 def evaluate_pii_accuracy(
     documents: list[tuple[str, str, list[dict[str, str]]]],
     detect_fn: Callable[[str], list[dict[str, str]]],
@@ -98,6 +103,7 @@ def evaluate_pii_accuracy(
         Dict of metric_name -> MetricValue, including per-type breakdown
     """
     all_predictions: list[bool] = []
+    all_type_strict: list[bool] = []  # one entry per scored detection, aligned to all_predictions
     all_gt_hits: list[bool] = []  # one entry per GT entity (may exceed #detections
     # when a single detection span covers multiple GT entities)
     per_type_total: Counter[str] = Counter()
@@ -121,6 +127,15 @@ def evaluate_pii_accuracy(
 
             matched = any(_values_match(gt_value, det_value) for gt_value in gt_values)
             all_predictions.append(matched)
+
+            # Type-strict credit: the span must match a GT entity AND the label
+            # must match. Reported alongside the type-agnostic precision, not in
+            # place of it — the span-level predicate stays the FR-006 definition.
+            type_strict = any(
+                _values_match(g["value"], det_value) and _type_matches(g["type"], det_type)
+                for g in gt_entities
+            )
+            all_type_strict.append(type_strict)
 
         # Per-type totals + correct counts, one per GT entity. A single
         # detection may cover several GT entities of the same type (e.g. a
@@ -164,12 +179,18 @@ def evaluate_pii_accuracy(
         metrics["pii_precision"] = MetricValue(
             value=total_precision, n=len(all_predictions), unit="precision"
         )
+        metrics["pii_precision_type_strict"] = MetricValue(
+            value=sum(all_type_strict) / len(all_type_strict),
+            n=len(all_predictions),
+            unit="precision",
+        )
         metrics["pii_f1"] = MetricValue(value=overall_f1, n=total_ground_truths, unit="f1")
     else:
         # No detections: report zero recall/precision/F1. n=1 satisfies the
         # MetricValue n>0 invariant while signaling a single evaluated corpus.
         metrics["pii_recall"] = MetricValue(value=0.0, n=1, unit="recall")
         metrics["pii_precision"] = MetricValue(value=0.0, n=1, unit="precision")
+        metrics["pii_precision_type_strict"] = MetricValue(value=0.0, n=1, unit="precision")
         metrics["pii_f1"] = MetricValue(value=0.0, n=1, unit="f1")
 
     # Per-type breakdown

@@ -101,6 +101,17 @@ class TestClauseHierarchyBuilder:
         cross_refs = [e for e in graph.edges if e.edge_type == EdgeType.cross_ref]
         assert len(cross_refs) >= 1
 
+    def test_unresolved_cross_ref_emits_edge_to_a_non_node(self) -> None:
+        """A reference to a section the document lacks still yields a cross_ref edge."""
+        builder = ClauseHierarchyBuilder()
+        clauses = [make_clause("c1", "See Section 9.9.", level=0, title="Article 1")]
+        graph = builder.build(clauses)
+
+        cross_refs = [e for e in graph.edges if e.edge_type == EdgeType.cross_ref]
+        assert len(cross_refs) == 1
+        assert cross_refs[0].target_id == "missing-section-9.9"
+        assert cross_refs[0].target_id not in graph.nodes
+
     def test_def_ref_edges_detected(self) -> None:
         """Definition references in clause text produce def_ref edges."""
         builder = ClauseHierarchyBuilder()

@@ -86,13 +86,12 @@ def chunk_document(path: Path) -> list[dict[str, Any]]:
 def _damaged(db_path: Path, error: sqlite3.DatabaseError) -> IndexCorruptError:
     """The project's damaged-index error for a file SQLite cannot read.
 
-    ``RetrievalStorage.get_index_meta`` catches only ``sqlite3.OperationalError``,
-    while a malformed image fails earlier, with a plain ``sqlite3.DatabaseError``
-    raised by ``PRAGMA journal_mode=WAL`` (``retrieval/storage.py:28``) - which
-    is not a subclass of it. Nothing downstream stops that error either, so
-    uncaught it reaches Textual's ``_handle_exception``, whose documented
-    behaviour is app exit with a traceback. Converting it here gives damage the
-    vocabulary the codebase and the screen already use for it, and keeps
+    ``RetrievalStorage.get_index_meta`` already converts a malformed image's
+    ``sqlite3.DatabaseError`` (raised by ``PRAGMA journal_mode=WAL``,
+    ``retrieval/storage.py:28``) into ``IndexCorruptError``, so this is a
+    documented backstop for a raw ``sqlite3.DatabaseError`` escaping any other
+    read (``index_meta``'s ``except`` and ``search``). Converting it gives damage
+    the vocabulary the codebase and the screen already use for it, and keeps
     ``sqlite3`` out of the UI layer. The SQLite reason is kept in the message so
     it still reaches the log.
     """
@@ -118,7 +117,7 @@ def index_meta(db_path: Path) -> dict[str, Any] | None:
         return None
     try:
         return RetrievalEngine(db_path).get_index_meta()
-    except sqlite3.DatabaseError as error:
+    except sqlite3.DatabaseError as error:  # backstop; get_index_meta raises IndexCorruptError
         raise _damaged(db_path, error) from error
 
 

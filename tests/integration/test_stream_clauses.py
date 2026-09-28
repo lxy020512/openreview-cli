@@ -69,9 +69,34 @@ class TestCrossFormatHierarchy:
         for path in [PDF / "simple_contract.pdf", DOCX / "simple_contract.docx"]:
             clauses = list(stream_clauses(path))
             ids = {c.id for c in clauses}
+            assert any(c.parent_id is not None for c in clauses)
             for clause in clauses:
                 if clause.parent_id is not None:
                     assert clause.parent_id in ids
+
+    @pytest.mark.integration
+    def test_numbered_document_parents_its_sections(self) -> None:
+        from openreview_cli.parsing.stream import parse_document
+
+        for path in (PDF / "simple_contract.pdf", DOCX / "simple_contract.docx"):
+            _doc, clauses = parse_document(path)
+            ids = {c.id for c in clauses}
+            article = clauses[0]
+            assert article.text.splitlines()[0].startswith("Article I")
+            assert clauses[1].parent_id == article.id
+            assert all(c.parent_id in ids for c in clauses if c.parent_id is not None)
+
+    @pytest.mark.integration
+    def test_unnumbered_fixtures_have_no_parents(self) -> None:
+        from openreview_cli.parsing.stream import parse_document
+
+        for path in (
+            PDF / "flat_document.pdf",
+            DOCX / "flat_document.docx",
+            FIXTURES / "nda_with_pii.pdf",
+        ):
+            _doc, clauses = parse_document(path)
+            assert all(c.parent_id is None for c in clauses), path
 
     @pytest.mark.integration
     def test_english_fixtures_have_no_warnings(self) -> None:

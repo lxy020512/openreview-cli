@@ -62,25 +62,32 @@ class TestMaxDepth:
 
 
 class TestOrphanRatio:
-    def test_root_with_child_is_orphan(self) -> None:
-        """Root with children but no parent is orphaned per spec."""
+    def test_root_with_child_is_not_orphan(self) -> None:
+        """A top-level clause declares no parent, so it is not an orphan."""
         ratio = compute_orphan_ratio(_two_nodes_one_edge())
-        assert ratio == pytest.approx(0.5)
+        assert ratio == 0.0
 
-    def test_one_orphan_out_of_three(self) -> None:
+    def test_declared_parent_present_is_not_orphan(self) -> None:
+        graph = ContractGraph(
+            nodes={
+                "c1": GraphNode("c1", "1", "t", 0),
+                "c2": GraphNode("c2", "2", "t", 1, parent_id="c1"),
+            },
+            edges=[GraphEdge("c1", "c2", EdgeType.parent_child)],
+        )
+        assert compute_orphan_ratio(graph) == 0.0
+
+    def test_dangling_parent_is_orphan(self) -> None:
         graph = ContractGraph(
             nodes={
                 "c1": GraphNode("c1", "1", "t", 0),
                 "c2": GraphNode("c2", "2", "t", 1),
-                "c3": GraphNode("c3", "3", "t", 2),
+                "c3": GraphNode("c3", "3", "t", 2, parent_id="missing"),
             },
-            edges=[
-                GraphEdge("c2", "c3", EdgeType.parent_child),
-            ],
+            edges=[GraphEdge("c1", "c2", EdgeType.parent_child)],
         )
-        # c2 has children (c3) but no parent → orphan
-        ratio = compute_orphan_ratio(graph)
-        assert ratio == pytest.approx(1.0 / 3.0)
+        # Only c3 names a parent the graph does not contain.
+        assert compute_orphan_ratio(graph) == pytest.approx(1.0 / 3.0)
 
 
 class TestBrokenRefCount:

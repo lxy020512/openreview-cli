@@ -45,7 +45,7 @@ Run each benchmark on your own machine to get comparable numbers; the offline no
 | Parse 1-page PDF, library level, cold | 3.1–3.2 s | one-time nupunkt model load per process |
 | Parse 1-page PDF, library level, warm | 0.004 s | second parse in same process |
 | Parse 37 KB DOCX, warm process | 0.016 s, 3 clauses | in-process timing; median of 6 warm runs |
-| PII strip, 50-page synthetic stress | 2.3823 s | 395 entities (see footprint below) |
+| PII strip, 50-page synthetic stress | 2.3823 s | 346 entities (see footprint below) |
 
 The cold-PDF number is dominated by a one-time sentence-segmentation model load (~3 s per process), not by PDF parsing itself.
 
@@ -57,7 +57,7 @@ No receipt by design: these rows are wall-clock on the [methodology](#methodolog
 |---|---|---|
 | CLI `--help` | ~43 MB | measurement above |
 | CLI parse (this sandbox) | ~410 MB | wall 14.0–44.4 s see [offline artifact](#environment-artifact-offline-registry-refresh) |
-| PII 50-page stress | ~1724 MB | 395 entities, 2.3823 s |
+| PII 50-page stress | ~1724 MB | 346 entities, 2.3823 s |
 
 The project's 100 MiB streaming memory target, with a 110 MiB hard ceiling enforced by the memory tests, applies to streaming pipeline paths; parsers stream page-by-page and never load a full document. The parse CLI process peaked ~410 MB and the spaCy/PII path ~1724 MB on the 50-page stress; both include one-time model loads, reported factually.
 
@@ -67,7 +67,7 @@ No receipt by design: peak RSS includes one-time model loads and the offline reg
 
 | Metric | Value | Method |
 |---|---|---|
-| PII corpus, 54 processed rows | 54/54 success, 1,918 entities, 73.906 s total (~1.4 s/row avg) | `scripts/benchmark_pii_stripping.py`, real `PiiEngine` |
+| PII corpus, 54 processed rows | 54/54 success, 1,857 entities, 73.906 s total (~1.4 s/row avg) | `scripts/benchmark_pii_stripping.py`, real `PiiEngine` |
 | PII derived rate | ~ 44 docs/min | derived: 54 rows / 73.906 s, single-process, engine init amortized across all rows |
 
 Last verified: 2026-09-22 @ b5f051a (receipt: docs/benchmarks/results/pii-throughput.json).
@@ -103,7 +103,7 @@ Last verified: 2026-09-24 @ 882568c (receipt: docs/benchmarks/results/accuracy-s
 | `tests/integration/test_pii_accuracy.py` (2 tests) | Detects ≥5 PII entities on up-to-10 real CUAD contracts; 0 false positives on clean text | ✓ pass |
 | `tests/unit/test_tier_accuracy.py` (9 tests) | Tier precision/recall/F1 targets frozen + monotonically increasing + threshold ordering | ✓ pass |
 | `tests/integration/test_review_accuracy.py` (7 tests) | F1 / amber-rate / QA-catch formulas correct; benchmark script exists + has required structure | ✓ pass |
-| `tests/integration/test_benchmark_pii_accuracy.py` (3 tests) | Labeled-corpus PII precision/recall (span-level) | ✓ pass: recall 96.4% and precision 95.3%, above the 95% spec target |
+| `tests/integration/test_benchmark_pii_accuracy.py` (3 tests) | Labeled-corpus PII precision/recall (span-level) | ✓ pass: recall 96.4% and span-level precision 94.8% (type-strict precision 83.1% reported alongside) |
 
 **Tier accuracy targets** (design goals, not measured source: `gateway/tier_accuracy.py:41-60`):
 
@@ -119,19 +119,20 @@ Last verified: 2026-09-24 @ 882568c (receipt: docs/benchmarks/results/accuracy-s
 
 Real `PiiEngine` (Presidio + spaCy `en_core_web_lg`) evaluated against `tests/fixtures/pii/seeded_contracts/` with `BenchmarkRunner.run_pii()`.
 
-Matching is span-level (type-agnostic): a detection counts as correct when its value overlaps a ground-truth value, whatever entity type label it carries, so a right span with a wrong label still counts as correct. That labelling limitation is tracked separately as D-82 in `specs/archive/DEFERRED.md` and issue 115.
+Matching is span-level (type-agnostic): a detection counts as correct when its value overlaps a ground-truth value, whatever entity type label it carries, so a right span with a wrong label still counts as correct. The engine now resolves overlapping spans (a regex match outranks an NER inference, then the more specific type), so a value two recognizers claim yields one detection rather than a duplicate; the D-82 labelling limitation in `specs/archive/DEFERRED.md` (issue 115) is resolved, and a separate type-strict precision reports label quality alongside the span-level figure.
 
-**Overall:** 717 detections across 50 contracts, 584 ground-truth entities.
+**Overall:** 656 detections across 50 contracts, 584 ground-truth entities.
 
 | Metric | Value | Notes |
 |---|---|---|
 | Recall | 96.4% | 563 / 584 ground-truth entities matched |
-| Precision | 95.3% | 683 / 717 predictions matched ground truth |
-| F1 | 95.8% | |
+| Precision | 94.8% | 622 / 656 predictions matched ground truth (span-level, type-agnostic) |
+| Precision (type-strict) | 83.1% | 545 / 656 span-level matches with the same type label |
+| F1 | 95.6% | |
 | Per-type recall (structured recognizers) | AMOUNT 100%, TAX_ID 100%, REG_NUMBER 100%, EMAIL_ADDRESS 100%, PHONE_NUMBER 100%, ACCT 100%, ID_DOCUMENT 100%, DATE_TIME 100%, LOCATION 100% | Exact on the seeded corpus |
 | Per-type recall (NER) | ORGANIZATION 83.3% (70 / 84), PERSON 86.0% (43 / 50) | spaCy NER on **synthetic** entity names (e.g. `Name3 Smith`, `AutoCompanyB1`); real contract accuracy is expected to differ |
 
-Last verified: 2026-09-24 @ 882568c (receipt: docs/benchmarks/results/pii-accuracy.json).
+Last verified: 2026-09-28 @ 882568c (receipt: docs/benchmarks/results/pii-accuracy.json).
 
 **Synthetic-data caveat:** the seeded corpus is artificially generated (`Name3 Smith`, `AutoCompanyB1`), so 96.4% describes synthetic documents, not real contracts. The remaining misses are concentrated in `PERSON` (86%) and `ORGANIZATION` (83%) — exactly the entities whose names are artificial. Treat these numbers as a baseline on synthetic data, not a real-contract guarantee.
 

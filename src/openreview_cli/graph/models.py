@@ -20,6 +20,7 @@ class GraphNode:
     text: str
     level: int
     metadata: dict[str, Any] = field(default_factory=dict)
+    parent_id: str | None = None
 
 
 @dataclass
@@ -52,16 +53,16 @@ class ContractGraph:
 
     @property
     def orphan_ids(self) -> list[str]:
-        parent_child_targets = {
-            e.target_id for e in self.edges if e.edge_type == EdgeType.parent_child
-        }
-        parent_child_sources = {
-            e.source_id for e in self.edges if e.edge_type == EdgeType.parent_child
-        }
+        """Node ids whose declared ``parent_id`` is not present in this graph.
+
+        An orphan is a clause that names a parent the document does not
+        contain. A top-level section (no declared parent, whatever its
+        children) is NOT an orphan.
+        """
         return [
             nid
-            for nid in self.nodes
-            if nid not in parent_child_targets and nid in parent_child_sources
+            for nid, node in self.nodes.items()
+            if node.parent_id is not None and node.parent_id not in self.nodes
         ]
 
     def to_json(self) -> str:
@@ -74,6 +75,7 @@ class ContractGraph:
                     "text": n.text,
                     "level": n.level,
                     "metadata": n.metadata,
+                    "parent_id": n.parent_id,
                 }
                 for n in self.nodes.values()
             ],
@@ -101,6 +103,7 @@ class ContractGraph:
                 text=nd.get("text", ""),
                 level=nd.get("level", 0),
                 metadata=nd.get("metadata", {}),
+                parent_id=nd.get("parent_id"),
             )
             nodes[node.id] = node
 

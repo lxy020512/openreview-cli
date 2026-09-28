@@ -1,12 +1,16 @@
 {
   "benchmark": "pii-accuracy",
   "command": "uv run python - <<'PY' (BenchmarkRunner.run_pii with the real PiiEngine; see AGENTS.md 'PII accuracy (seeded corpus)')",
-  "date": "2026-09-24",
+  "date": "2026-09-28",
   "git_commit": "882568c",
   "provenance": [
     {
       "path": "src/openreview_cli/benchmark/metrics_pii.py",
-      "sha256": "24166676066e2e4a5dcb49c58b161cc00e0d2a9e3b4efcbf34b69a04e536c277"
+      "sha256": "76bda2d6a31512af2cf83c6ca7b1c2106de25dc89a36a37f2e07edb92676aa4f"
+    },
+    {
+      "path": "src/openreview_cli/pii/engine.py",
+      "sha256": "1150b25b44db4605eff5ac35536b03b92ca897705aafbcb39d762f666f586606"
     }
   ],
   "models": "none (local Presidio + spaCy en_core_web_lg)",
@@ -21,11 +25,15 @@
       "n": 584
     },
     "pii_precision": {
-      "value": 0.9526,
-      "n": 717
+      "value": 0.9482,
+      "n": 656
+    },
+    "pii_precision_type_strict": {
+      "value": 0.8308,
+      "n": 656
     },
     "pii_f1": {
-      "value": 0.9583,
+      "value": 0.956,
       "n": 584
     },
     "pii_recall_organization": {

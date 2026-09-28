@@ -67,8 +67,8 @@ XDG_VARS: tuple[str, ...] = (
     "XDG_CACHE_HOME",
 )
 
-# ``014_pii_cache_filename.sql`` is the highest migration shipped today.
-LATEST_USER_VERSION = 14
+# ``015_graph_nodes_parent_id.sql`` is the highest migration shipped today.
+LATEST_USER_VERSION = 15
 
 # The review path can write any of these; the other tables are seeded by the CLI
 # smoke path (clients) or never touched by a review run.

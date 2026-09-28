@@ -12,8 +12,11 @@ MAX_EXPECTED_DEPTH = 10
 #: Upper bound for broken-ref count normalisation. Count >= this is worst.
 MAX_EXPECTED_BROKEN_REFS = 10
 
-#: Default weights: [density, depth, orphans, broken_refs, coverage]
-DEFAULT_WEIGHTS: list[float] = [0.15, 0.20, 0.20, 0.25, 0.20]
+#: Default weights: [density, depth, orphans, broken_refs, coverage].
+#: The score measures structural defects only: density and depth are reported
+#: but score nothing (a defect-free document scores 100 whether flat or
+#: structured). A caller may still weight them via custom weights.
+DEFAULT_WEIGHTS: list[float] = [0.0, 0.0, 0.35, 0.40, 0.25]
 
 
 @dataclass
@@ -47,13 +50,17 @@ def compute_health(
 ) -> HealthScore:
     """Compute a 0-100 health score from graph metrics.
 
-    Takes five metrics (density, max_depth, orphan_ratio, broken_ref_count,
-    definition_coverage) and combines them with configurable weights.
+    The default score measures structural defects only: clauses whose declared
+    parent is missing (``orphan_ratio``), broken cross-references
+    (``broken_ref_count``) and uncovered definitions (``definition_coverage``).
+    Density and depth are still accepted and reported but carry zero weight by
+    default, so a defect-free document scores 100 whether flat or structured.
+    All five components are combined with the configured weights.
 
     Args:
         metrics: Computed graph metrics.
-        weights: Five weights. None = use defaults.
-            Zero-sum weights = use defaults.
+        weights: Five weights (density, depth, orphans, broken_refs,
+            coverage). None = use defaults. Zero-sum weights = use defaults.
 
     Returns:
         HealthScore with integer 0-100 score and weights used.
