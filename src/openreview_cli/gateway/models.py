@@ -47,6 +47,12 @@ def classify_provider(model: ProviderInfo) -> str:
     """Return "local" if the provider runs locally, else "cloud"."""
     if model.is_local:
         return "local"
+    # ollama is user-run infrastructure (their machine, LAN, or a server they
+    # control), not a third-party cloud API, so it stays "local" even when
+    # OLLAMA_HOST points somewhere other than loopback: the maximum privacy tier
+    # must not block it for being off-localhost.
+    if model.name == "ollama":
+        return "local"
     if model.base_url:
         try:
             host = urlparse(model.base_url).hostname or ""

@@ -860,6 +860,25 @@ class TestProviderClassificationTelemetry:
     def test_local_named_provider_without_base_url_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """A provider that is neither flagged local nor ollama, and has no
+        base_url, must raise rather than be coerced to "cloud" (fail closed)."""
+        registry = {
+            "lmstudio": ProviderInfo(
+                name="lmstudio", is_local=False, base_url=None, capabilities=Capability()
+            )
+        }
+        gw = self._make_gateway(monkeypatch, registry)
+        gw._config["gateway"]["models"]["extraction"]["primary"] = "lmstudio/llama3.1"
+        info = gw._resolve_provider_info("extraction")
+        assert info is not None
+        with pytest.raises(ValueError):
+            classify_provider(info)  # must NOT coerce to "cloud"
+
+    def test_ollama_is_local_even_without_base_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Decision (#176): ollama is user-run infrastructure and is always local,
+        regardless of whether a base_url is set or where it points."""
         registry = {
             "ollama": ProviderInfo(
                 name="ollama", is_local=False, base_url=None, capabilities=Capability()
@@ -868,8 +887,7 @@ class TestProviderClassificationTelemetry:
         gw = self._make_gateway(monkeypatch, registry)
         info = gw._resolve_provider_info("extraction")
         assert info is not None
-        with pytest.raises(ValueError):
-            classify_provider(info)  # must NOT coerce to "cloud"
+        assert classify_provider(info) == "local"
 
     def test_cloud_provider_classifies_cloud(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import platformdirs
@@ -20,6 +23,54 @@ from openreview_cli.gateway.models import Capability, ModelEntry, ProviderInfo
 
 def _config_dir() -> Path:
     return Path(platformdirs.user_config_dir("openreview"))
+
+
+logger = logging.getLogger(__name__)
+
+_OLLAMA_DEFAULT_URL = "http://localhost:11434"
+_OLLAMA_DEFAULT_PORT = 11434
+# Bind-all addresses are valid for listening but cannot be connected to as a client.
+_OLLAMA_UNSPECIFIED_HOSTS = {"0.0.0.0": "127.0.0.1", "::": "::1"}
+
+
+def ollama_base_url_from_env(environ: Mapping[str, str] | None = None) -> str:
+    """Resolve Ollama's base URL from ``OLLAMA_HOST``, mirroring Ollama's own rules.
+
+    ``OLLAMA_HOST`` is ``host[:port]`` with an optional scheme (Ollama's format; its
+    default is 127.0.0.1:11434). A value that already carries a scheme is used as
+    given; otherwise ``http`` and the default port 11434 are applied. A bind-all
+    address (0.0.0.0 / ::) is mapped to loopback. A malformed value is ignored (the
+    default is kept) and logged, so a bad variable never breaks startup.
+    """
+    env = os.environ if environ is None else environ
+    raw_value = env.get("OLLAMA_HOST")
+    if raw_value is None:
+        return _OLLAMA_DEFAULT_URL
+    raw = raw_value.strip().strip("\"'").strip()
+    if not raw:
+        logger.warning("Ignoring empty OLLAMA_HOST; using %s", _OLLAMA_DEFAULT_URL)
+        return _OLLAMA_DEFAULT_URL
+
+    has_scheme = "://" in raw
+    try:
+        parts = urlsplit(raw if has_scheme else f"http://{raw}")
+        host = parts.hostname
+        port = parts.port  # raises ValueError on a non-numeric port
+    except ValueError:
+        host, port = None, None
+    if not host:
+        logger.warning("Ignoring invalid OLLAMA_HOST=%r; using %s", raw, _OLLAMA_DEFAULT_URL)
+        return _OLLAMA_DEFAULT_URL
+
+    host = _OLLAMA_UNSPECIFIED_HOSTS.get(host, host)
+    if not has_scheme and port is None:
+        port = _OLLAMA_DEFAULT_PORT
+    if port is None:
+        netloc = f"[{host}]" if ":" in host else host
+    else:
+        netloc = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+    scheme = parts.scheme if has_scheme else "http"
+    return urlunsplit((scheme, netloc, parts.path.rstrip("/"), "", ""))
 
 
 def _build_provider(name: str, info: dict[str, Any]) -> ProviderInfo:
@@ -75,11 +126,25 @@ def load_registry() -> dict[str, ProviderInfo]:
                 custom["source"] = "custom"
                 merged[custom["name"]] = _build_provider(custom["name"], custom)
 
+    # OLLAMA_HOST override (runtime). Applied last so it wins over the bundled and
+    # user-overlay addresses; untouched when the variable is unset.
+    if os.environ.get("OLLAMA_HOST") is not None and "ollama" in merged:
+        resolved = ollama_base_url_from_env()
+        current = merged["ollama"].base_url
+        if resolved != current:
+            logger.info("OLLAMA_HOST override: ollama base_url %s -> %s", current, resolved)
+        merged["ollama"] = merged["ollama"].model_copy(update={"base_url": resolved})
+
     return merged
 
 
-def discover_ollama(base_url: str = "http://localhost:11434") -> list[dict[str, Any]]:
-    """Return locally installed Ollama models, or [] if the server is unreachable."""
+def discover_ollama(base_url: str | None = None) -> list[dict[str, Any]]:
+    """Return locally installed Ollama models, or [] if the server is unreachable.
+
+    ``base_url`` defaults to the ``OLLAMA_HOST``-resolved address.
+    """
+    if base_url is None:
+        base_url = ollama_base_url_from_env()
     try:
         resp = httpx.get(f"{base_url}/api/tags", timeout=5)
         resp.raise_for_status()
@@ -227,5 +292,5 @@ class ModelRegistry:
         self.load()
         return sum(len(p.models) for p in self._providers.values())
 
-    def discover_ollama(self, base_url: str = "http://localhost:11434") -> list[dict[str, Any]]:
+    def discover_ollama(self, base_url: str | None = None) -> list[dict[str, Any]]:
         return discover_ollama(base_url)

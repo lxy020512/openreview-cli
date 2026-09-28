@@ -15,6 +15,7 @@ from openreview_cli.gateway.registry import (
     add_custom_provider,
     discover_ollama,
     load_registry,
+    ollama_base_url_from_env,
 )
 
 MODELS_JSON = {
@@ -620,3 +621,90 @@ def test_provider_credential_status_partial(monkeypatch: pytest.MonkeyPatch) -> 
     result = provider_credential_status(info, {})
     assert result["credentials"][2]["resolved"] is True
     assert "fake" not in json.dumps(result)
+
+
+# --- OLLAMA_HOST (issue #176) ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("some.host:11434", "http://some.host:11434"),  # host:port -> http://host:port
+        ("some.host", "http://some.host:11434"),  # no port -> default 11434
+        ("http://some.host:9000", "http://some.host:9000"),  # scheme kept as given
+        ("https://ollama.internal:9443", "https://ollama.internal:9443"),
+        ("0.0.0.0:11434", "http://127.0.0.1:11434"),  # bind-all -> loopback
+        ("[::1]:11434", "http://[::1]:11434"),  # IPv6
+        ("  some.host:11434  ", "http://some.host:11434"),  # whitespace trimmed
+        ("host:notaport", "http://localhost:11434"),  # malformed -> default
+        ("http://", "http://localhost:11434"),  # malformed -> default
+        ("", "http://localhost:11434"),  # empty -> default
+    ],
+)
+def test_ollama_base_url_from_env_normalizes(raw: str, expected: str) -> None:
+    assert ollama_base_url_from_env({"OLLAMA_HOST": raw}) == expected
+
+
+def test_ollama_base_url_from_env_unset_uses_default() -> None:
+    assert ollama_base_url_from_env({}) == "http://localhost:11434"
+
+
+def _isolate_registry_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep load_registry() off the developer's real ~/.config/openreview overlay."""
+    monkeypatch.setattr("openreview_cli.gateway.registry._config_dir", lambda: tmp_path)
+
+
+def test_ollama_host_unset_leaves_default_base_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    _isolate_registry_config(monkeypatch, tmp_path)
+    assert load_registry()["ollama"].base_url == "http://localhost:11434"
+
+
+def test_ollama_host_sets_registry_base_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OLLAMA_HOST", "some.host:11434")
+    _isolate_registry_config(monkeypatch, tmp_path)
+    assert load_registry()["ollama"].base_url == "http://some.host:11434"
+
+
+def test_ollama_host_non_local_address_still_classified_local(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A LAN/self-hosted OLLAMA_HOST must stay "local" so the maximum privacy
+    tier does not block it (decision for issue #176)."""
+    from openreview_cli.gateway.models import classify_provider
+    from openreview_cli.gateway.tier_router import TierRouter
+
+    monkeypatch.setenv("OLLAMA_HOST", "192.168.1.50:11434")
+    _isolate_registry_config(monkeypatch, tmp_path)
+
+    info = load_registry()["ollama"]
+    assert info.base_url == "http://192.168.1.50:11434"
+    assert classify_provider(info) == "local"
+    assert (
+        TierRouter.classify_provider({"model": "ollama/qwen3:8b", "api_base": info.base_url})
+        == "local"
+    )
+
+
+def test_discover_ollama_default_uses_ollama_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+
+    class _Resp:
+        def raise_for_status(self) -> None: ...
+
+        def json(self) -> dict[str, Any]:
+            return {"models": []}
+
+    def _fake_get(url: str, timeout: float) -> Any:
+        captured["url"] = url
+        return _Resp()
+
+    monkeypatch.setenv("OLLAMA_HOST", "some.host:11434")
+    monkeypatch.setattr("openreview_cli.gateway.registry.httpx.get", _fake_get)
+
+    assert discover_ollama() == []
+    assert captured["url"] == "http://some.host:11434/api/tags"

@@ -16,7 +16,9 @@ if TYPE_CHECKING:
 
 _LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 _UNIX_SOCKET_RE = re.compile(r"^(unix:)?/.*")
-# Known local provider prefixes from model string (e.g., "ollama/qwen3:8b")
+# Known local provider prefixes from model string (e.g., "ollama/qwen3:8b").
+# ollama counts as local regardless of the address it is configured with
+# (OLLAMA_HOST): it is user-run infrastructure, not a third-party cloud API.
 _LOCAL_PROVIDER_PREFIXES = frozenset({"ollama", "local"})
 
 
