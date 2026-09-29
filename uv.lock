@@ -1550,11 +1550,11 @@ wheels = [
 
 [[package]]
 name = "nupunkt"
-version = "0.6.0"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b9/d5/93f053d3ffda443eeffada12194eb924b5ed4f4e1d94ae69974dba2f38d6/nupunkt-0.6.0.tar.gz", hash = "sha256:1caee9c1b31326b542c95bf33f2562e5d2b991dd35c89c480baea65cc57f9638", size = 9071523, upload-time = "2025-08-05T13:09:06.637Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bb/28/8daac6d8a466c74ed13784014f93c321613b0d58f43a0f9888156ce74663/nupunkt-0.8.0.tar.gz", hash = "sha256:d38168c549aa1eeb8161d828084a5785e2fad749a22c4517be371f55002e2e91", size = 146534, upload-time = "2026-09-28T11:19:18.999Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/10/b9/618f5af01158d9feb57b27d7ad5f5f6efb1bff724ddcfc5d7cde179d3b80/nupunkt-0.6.0-py3-none-any.whl", hash = "sha256:35e52d4f9c48fac6678b5c4d942e746860e7b1c337cb9a5d8a5bd97dd2b6603a", size = 9078947, upload-time = "2025-08-05T13:09:03.062Z" },
+    { url = "https://files.pythonhosted.org/packages/fd/e1/33da54f6939280c53b39a7f4257f8b145e0671a2528aae53299de47fcc2f/nupunkt-0.8.0-py3-none-any.whl", hash = "sha256:339e4b017eded7a060a17a55300854c35eb067c05857da0843cd93b5c1d85f9b", size = 148375, upload-time = "2026-09-28T11:19:17.742Z" },
 ]
 
 [[package]]
@@ -1626,7 +1626,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "litellm", specifier = ">=1.90.1" },
     { name = "numpy", specifier = ">=1.24" },
-    { name = "nupunkt", specifier = ">=0.6.0" },
+    { name = "nupunkt", specifier = ">=0.8.0" },
     { name = "platformdirs", specifier = ">=4.10.0" },
     { name = "presidio-analyzer", specifier = ">=2.2.362" },
     { name = "presidio-anonymizer", specifier = ">=2.2.362" },
