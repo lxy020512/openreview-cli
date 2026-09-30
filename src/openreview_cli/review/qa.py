@@ -8,10 +8,12 @@ extraction, the assessment is flagged Amber with a revised position.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 from openreview_cli.gateway.models import CapabilityRequirement
+from openreview_cli.llm_json import strip_fences
 from openreview_cli.review._gateway import call_gateway_chat
 from openreview_cli.review.models import Category, ClauseAssessment, Position, QAVerdict
 from openreview_cli.review.prompts import _parse_json, build_qa_messages
@@ -27,6 +29,7 @@ def verify_assessment(
     coordinator: Any = None,
     recovery_ctx: Any = None,
     provider_list: list[str] | None = None,
+    strict: bool = False,
 ) -> ClauseAssessment:
     """Run QA verification on a single clause assessment.
 
@@ -68,6 +71,10 @@ def verify_assessment(
         walkaway_exemplars=category.walkaway.exemplars,
     )
 
+    if strict:
+        assessment.qa_model = qa_model
+
+    invalid_response = False
     try:
         raw_response = call_gateway_chat(
             qa_model,
@@ -77,12 +84,20 @@ def verify_assessment(
             coordinator=coordinator,
             recovery_ctx=recovery_ctx,
             provider_list=provider_list,
+            **({"safe_errors": True} if strict else {}),
         )
+        if strict and not _strict_qa_valid(raw_response):
+            invalid_response = True
+            raise ValueError("invalid QA response")  # noqa: TRY301 - same handler produces the fixed safe failure category
         parsed = _parse_qa_response(raw_response)
     except Exception as exc:
-        logger.warning("QA call failed for %s: %s", assessment.clause_id, exc)
+        error = "qa_invalid_response" if invalid_response else "qa_call_failed"
+        if strict:
+            logger.warning("QA failed: %s", error)
+        else:
+            logger.warning("QA call failed for %s: %s", assessment.clause_id, exc)
         assessment.qa_verdict = QAVerdict.uncertain
-        assessment.error = str(exc)
+        assessment.error = error if strict else str(exc)
         assessment.is_amber = True
         return assessment
 
@@ -101,6 +116,30 @@ def verify_assessment(
 
     assessment.is_amber = _calculate_amber(assessment, parsed)
     return assessment
+
+
+def _strict_qa_valid(raw: str) -> bool:
+    try:
+        data = json.loads(strip_fences(raw))
+        if not isinstance(data, dict) or data.get("verdict") not in {v.value for v in QAVerdict}:
+            return False
+        revised = data.get("revised_position")
+        return (
+            "revised_position" in data
+            and (revised is None or revised in {p.value for p in Position})
+            and isinstance(data.get("rationale"), str)
+            and all(
+                type(data.get(key)) is bool
+                for key in (
+                    "citation_valid",
+                    "position_valid",
+                    "category_valid",
+                    "confidence_valid",
+                )
+            )
+        )
+    except (ValueError, TypeError):
+        return False
 
 
 def _parse_qa_response(raw: str) -> dict[str, Any]:

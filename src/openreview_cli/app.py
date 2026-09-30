@@ -1375,6 +1375,14 @@ def review(
     ),
     no_pii: bool = typer.Option(False, "--no-pii", help="Skip PII stripping."),
     verbose: bool = typer.Option(False, "--verbose", help="Show per-clause progress."),
+    resume: bool = typer.Option(
+        False, "--resume", help="Reuse successful same-file extraction/QA checkpoints."
+    ),
+    force_review: bool = typer.Option(
+        False,
+        "--force-review",
+        help="Recompute checkpointed steps while preserving the cost session; requires --resume.",
+    ),
     grounding_mode: str | None = typer.Option(
         "strict",
         "--grounding-mode",
@@ -1403,6 +1411,9 @@ def review(
     position assessments, confidence scores, and citation grounding.
     """
     # Validate grounding mode
+    if force_review and not resume:
+        typer.echo("Error: --force-review requires --resume", err=True)
+        raise typer.Exit(code=2)
     if grounding_mode not in ("strict", "lenient"):
         typer.echo(
             f"Error: --grounding-mode must be 'strict' or 'lenient', got '{grounding_mode}'",
@@ -1412,6 +1423,7 @@ def review(
 
     from openreview_cli.review import run_review
 
+    resume_kwargs: dict[str, Any] = {"resume": True, "force_review": force_review} if resume else {}
     try:
         reports = run_review(
             paths=paths,
@@ -1425,6 +1437,7 @@ def review(
             confidence_threshold=confidence_threshold,
             mode="precheck",
             allow_partial_pii=allow_partial_pii,
+            **resume_kwargs,
         )
     except FileNotFoundError as e:
         typer.echo(f"Error: {_format_exception(e)}", err=True)
@@ -1435,6 +1448,26 @@ def review(
 
     _emit_reviews(reports, format, output, _privacy_footer(), memo_format, output_dir)
     typer.echo("Costs: see `openreview gateway costs --today`")
+
+
+@precheck_app.command("checkpoints-clear")
+def checkpoints_clear(
+    path: Path = typer.Argument(..., exists=True, file_okay=True, dir_okay=False),
+) -> None:
+    """Logically delete checkpoints for this file's current bytes, preserving other data."""
+    from openreview_cli.review.checkpoints import CheckpointError, document_hash
+    from openreview_cli.storage.checkpoints import CheckpointStore
+
+    try:
+        runs, steps = CheckpointStore(get_data_dir() / "openreview.db").clear_document(
+            document_hash(path)
+        )
+    except CheckpointError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=2) from None
+    typer.echo(
+        f"Deleted {runs} run(s), {steps} step(s). Logical deletion only; other data is preserved."
+    )
 
 
 app.add_typer(precheck_app)

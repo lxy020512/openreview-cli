@@ -1,0 +1,71 @@
+{
+  "kind": "offline-mocked-gateway-fault-experiment",
+  "schema_version": 1,
+  "scope": "ReviewStage extraction+QA only; parsing/PII/grounding/cloud costs excluded",
+  "baseline": {
+    "calls": {
+      "extraction": 3,
+      "qa": 3
+    },
+    "elapsed_seconds": 0.31486069969832897,
+    "description": "Cold, uninterrupted opt-in review reference"
+  },
+  "interrupted_before_request": {
+    "calls": {
+      "extraction": 2,
+      "qa": 1
+    }
+  },
+  "resumed": {
+    "calls": {
+      "extraction": 1,
+      "qa": 2
+    },
+    "elapsed_seconds": 0.17767190001904964,
+    "results_equal_baseline": true
+  },
+  "full_hit": {
+    "calls": {
+      "extraction": 0,
+      "qa": 0
+    },
+    "elapsed_seconds": 0.035081499721854925
+  },
+  "force": {
+    "calls": {
+      "extraction": 3,
+      "qa": 3
+    },
+    "elapsed_seconds": 0.32024200027808547,
+    "same_session": true
+  },
+  "after_reply_before_commit": {
+    "interrupted_calls": {
+      "extraction": 2,
+      "qa": 1
+    },
+    "resumed_calls": {
+      "extraction": 2,
+      "qa": 2
+    },
+    "total_calls": 7,
+    "results_equal_baseline": true,
+    "limit": "A completed external reply before SQLite commit may be requested again."
+  },
+  "qa_timeout": {
+    "calls": {
+      "extraction": 3,
+      "qa": 3
+    },
+    "elapsed_seconds": 0.2917790999636054,
+    "failed_assessments": 1
+  },
+  "qa_timeout_resume": {
+    "calls": {
+      "extraction": 0,
+      "qa": 1
+    },
+    "elapsed_seconds": 0.08647549990564585,
+    "results_equal_baseline": true
+  }
+}

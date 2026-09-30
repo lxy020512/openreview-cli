@@ -10,6 +10,20 @@ Privacy-first contract review automation CLI. Local-first, multi-agent AI that s
 
 openreview-cli runs entirely from the command line. It parses a contract, strips personally identifiable information before anything leaves your machine, reviews each clause through a multi-agent pipeline, and writes a structured memo. Every model slot ships pointed at local Ollama, so a default run makes no cloud calls. Set `privacy.tier` to `maximum` to hard-enforce local-only.
 
+## Fork enhancements
+
+This fork builds on upstream commit `db184390e7b23e052c68ef3b04022dc5befec9c1` and retains the upstream code, attribution, and AGPL-3.0 license. Its changes focus on opt-in same-file extraction/QA checkpoints and DeepSeek configuration:
+
+- `precheck review INPUT --resume` reuses validated encrypted steps. Parsing, local PII handling, optional grounding, and report generation still run. `--resume --force-review` recomputes steps while retaining the cost session.
+- `precheck checkpoints-clear INPUT` logically deletes checkpoint records for the file's current bytes, preserving other data and older file versions.
+- A local DeepSeek configuration helper updates selected review slots while retaining privacy gates and storing credentials outside the worktree.
+
+The [offline fault receipt](docs/benchmarks/checkpoints/clause-checkpoints-offline.json) records 6 extraction/QA dispatches for a cold synthetic run, 3 remaining after a pre-request interruption, and 0 on a full hit. It also demonstrates a duplicate dispatch after a reply-before-commit interruption. The initial live smoke exposed a prompt/strict-enum mismatch; the strict template was aligned while preserving non-resume behavior and validation. After that fix, 78 new tests passed in the E: worktree.
+
+The [DeepSeek smoke receipt](docs/benchmarks/checkpoints/clause-checkpoints-deepseek-smoke.json) records 2 SDK dispatches on a public NDA, then 0 on a same-process repeat, with no failed assessments and equal normalized results. A [fresh-process check](docs/benchmarks/checkpoints/clause-checkpoints-fresh-process.json) also restored equal results with 0 SDK attempts under a request guard. Only one of five parsed clauses was a keyword-category candidate; this verifies the exercised workflow and persistent cache, not complete legal coverage. Accuracy, billed amounts, production reliability, and general latency improvements remain unverified.
+
+See [checkpoint usage and limits](docs/checkpoints.md), [DeepSeek setup](docs/deepseek-setup.md), [Windows reproduction](docs/windows-baseline-environment.md), and [change rationale](docs/change-rationale.md). Existing upstream benchmark claims below have not been remeasured by this fork.
+
 ## Status: alpha
 
 The core pipeline works and is tested (3,935 tests). Two numbers matter most if you're deciding whether to trust it with real documents right now.

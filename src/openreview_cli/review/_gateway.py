@@ -88,6 +88,7 @@ def call_gateway_chat(
     coordinator: RecoveryCoordinator | None = None,
     recovery_ctx: RecoveryContext | None = None,
     provider_list: list[str] | None = None,
+    safe_errors: bool = False,
 ) -> str:
     """Call the AI Gateway's chat method.
 
@@ -125,7 +126,7 @@ def call_gateway_chat(
         error_metadata: dict[str, Any] = {
             "http_status": _http_status_for(exc),
             "error_type": type(exc).__name__,
-            "last_error": str(exc),
+            "last_error": "review_gateway_failed" if safe_errors else str(exc),
         }
 
         async def _recover(original_error: Exception = exc) -> str:

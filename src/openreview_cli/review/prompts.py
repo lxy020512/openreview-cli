@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from openreview_cli.llm_json import fence_safe, strip_fences
+from openreview_cli.review.models import Position
 
 
 def _parse_json(raw: str, fallback: dict[str, Any]) -> dict[str, Any]:
@@ -339,11 +340,14 @@ def _build_extraction_messages_common(
     walkaway_exemplars: list[str],
     default_position: str,
     mode: str = "precheck",
+    strict: bool = False,
 ) -> list[dict[str, str]]:
     """Common extraction message builder — shared by all mode-specific prompts.
 
     Builds the user message with category and position data, using a
     mode-specific system prompt derived from ``MODE_VOCABULARY[mode]``.
+    Strict mode advertises only checkpoint-valid positions and an explicit
+    uncertain judgment for category mismatch or insufficient evidence.
     """
     vocab = MODE_VOCABULARY[mode]
     system_prompt = BASE_SYSTEM_PROMPT.format(**vocab)
@@ -351,6 +355,19 @@ def _build_extraction_messages_common(
     pref_ex = "\n".join(f'  - "{e}"' for e in preferred_exemplars)
     acc_ex = "\n".join(f'  - "{e}"' for e in acceptable_exemplars)
     walk_ex = "\n".join(f'  - "{e}"' for e in walkaway_exemplars)
+
+    position_choices = (
+        " | ".join(json.dumps(position.value) for position in Position)
+        if strict
+        else '"preferred" | "acceptable" | "walkaway" | "no-match"'
+    )
+    classification_guidance = (
+        "### Classification guidance\n"
+        "If the clause does not match this category or the evidence is insufficient "
+        'to assign a position, return "position": "uncertain" and "category_match": false.\n\n'
+        if strict
+        else f"### Default position (if no specific indicators match)\n{default_position}\n\n"
+    )
 
     user = (
         f"## Category: {category_name}\n"
@@ -364,13 +381,12 @@ def _build_extraction_messages_common(
         f"### Walkaway\n"
         f"{walkaway_desc}\n"
         f"Exemplars:\n{walk_ex}\n\n"
-        f"### Default position (if no specific indicators match)\n"
-        f"{default_position}\n\n"
+        f"{classification_guidance}"
         f"## Clause to classify\n"
         f"```\n{fence_safe(clause_text)}\n```\n\n"
         "Return JSON:\n"
         "{\n"
-        '  "position": "preferred" | "acceptable" | "walkaway" | "no-match",\n'
+        f'  "position": {position_choices},\n'
         '  "confidence": 0.0-1.0,\n'
         '  "citation": "exact quoted text from the clause supporting your assessment",\n'
         '  "category_match": true | false\n'

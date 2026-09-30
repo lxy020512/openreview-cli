@@ -23,3 +23,7 @@ class CriticalStageError(StageError):
 
 class MemoryBudgetError(PipelineError):
     """Memory budget exceeded during pipeline execution."""
+
+
+class CheckpointError(Exception):
+    """Fixed safe persistence/identity failure; bypass stage retry and report conversion."""
