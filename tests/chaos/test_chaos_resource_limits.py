@@ -13,8 +13,8 @@ CLI or the real storage helper:
    ``failing_write`` row: the write must roll back, leave no partial row and leave
    the database usable.
 
-The read-only cases skip themselves when the suite runs as root, because
-``chmod`` does not restrict root (the same guard the plan's W8b names).
+The read-only cases skip themselves on Windows, where ``chmod`` does not enforce
+POSIX directory permissions, and as root, which bypasses those permissions.
 
 The memory case carries ``@pytest.mark.memory`` and is a no-op unless the run was
 selected with ``-m memory``, so ``-m memory`` stays standalone (plan section 8:
@@ -40,9 +40,10 @@ pytestmark = pytest.mark.chaos
 
 TRACEBACK_TOKEN = w8.TRACEBACK_TOKEN
 
-# chmod does not restrict root, so the read-only cases are meaningless there.
+# POSIX chmod permission checks are meaningful only on a non-root POSIX run.
 NOT_ROOT = pytest.mark.skipif(
-    os.geteuid() == 0, reason="chmod does not restrict root; the read-only case is vacuous"
+    os.name == "nt" or getattr(os, "geteuid", lambda: -1)() == 0,
+    reason="requires POSIX directory write permissions and a non-root user",
 )
 
 
