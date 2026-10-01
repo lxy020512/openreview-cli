@@ -82,7 +82,10 @@ def test_write_output_file_valid_writable_file_writes(
     assert capsys.readouterr().err == ""
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory write permissions")
+@pytest.mark.skipif(
+    os.name == "nt" or getattr(os, "geteuid", lambda: -1)() == 0,
+    reason="requires POSIX directory write permissions and a non-root user",
+)
 def test_precheck_review_unwritable_output_exits_clean(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -99,8 +102,8 @@ def test_precheck_review_unwritable_output_exits_clean(
     ``chmod 0o500`` (read+execute, no write). The OS raises
     ``PermissionError`` on ``write_text``, which the helper converts to
     ``typer.Exit(1)`` with a clean error message. The test is skipped
-    when running as root because root bypasses POSIX directory write
-    permissions.
+    on Windows, where chmod does not enforce POSIX directory permissions,
+    or when running as root, which bypasses those permissions.
 
     The CLI's heavy review pipeline is replaced by a synthetic
     ``ReviewReport`` returned from a stub of

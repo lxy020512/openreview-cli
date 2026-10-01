@@ -1,0 +1,57 @@
+{
+  "kind": "real-provider-public-NDA-after-strict-prompt-fix",
+  "provider": "deepseek",
+  "configured_model": "deepseek-flash",
+  "grounding": false,
+  "pii_stripping_enabled": true,
+  "same_process_cli_invocations": true,
+  "sdk_dispatch_limit": 2,
+  "sdk_dispatches": [
+    {
+      "max_tokens": 2000,
+      "stage": "extraction",
+      "usage": {
+        "prompt_tokens": 470,
+        "completion_tokens": 275,
+        "total_tokens": 745
+      },
+      "finish_reason": "stop",
+      "strict_schema_valid": true
+    },
+    {
+      "max_tokens": 4000,
+      "stage": "qa",
+      "usage": {
+        "prompt_tokens": 567,
+        "completion_tokens": 644,
+        "total_tokens": 1211
+      },
+      "finish_reason": "stop",
+      "strict_schema_valid": true
+    }
+  ],
+  "runs": [
+    {
+      "phase": "initial_after_fix",
+      "exit_code": 0,
+      "sdk_dispatches": 2,
+      "elapsed_seconds": 16.921,
+      "assessments": 5,
+      "failed_assessments": 0,
+      "error_categories": []
+    },
+    {
+      "phase": "resume_cache_check",
+      "exit_code": 0,
+      "sdk_dispatches": 0,
+      "elapsed_seconds": 1.581,
+      "assessments": 5,
+      "failed_assessments": 0,
+      "error_categories": []
+    }
+  ],
+  "billing_amount_verified": false,
+  "raw_response_stored_in_diagnostic": false,
+  "normalized_assessments_equal": true,
+  "status": "passed"
+}

@@ -6,11 +6,11 @@
   "provenance": [
     {
       "path": "src/openreview_cli/review/extraction.py",
-      "sha256": "1afb00113de25f34273517604171a096a03eb14f2c4a3753b47bc4e5b7f045e5"
+      "sha256": "2bd8024a00783d41fe9004b668a595703035a96eff0fa1800e3b88e03f6e9e88"
     },
     {
       "path": "src/openreview_cli/review/qa.py",
-      "sha256": "3dfa8d1e649ad3cd3a205fef95dbf4f6f7fe71e1df0c8ae6e9395884859027d3"
+      "sha256": "40994a654267f12f96843713c33104a0c64bbd4f5b18adb5f8872231c30b4781"
     }
   ],
   "models": "unrecorded in source artifact",
@@ -34,5 +34,5 @@
     "total_elapsed_seconds": 80.7,
     "avg_seconds_per_clause": 6.72
   },
-  "notes": "Live paid run recorded 2026-09-21. No clause text is stored in the receipt. The latency cells here supersede the earlier 107.5 s / 9.0 s figures, which came from a superseded run (decision D1/R2). The provenance pin covers the current file content as of 2026-09-22, so it catches future drift; it cannot prove the historical revision that produced this number, because the run predates the recording of a commit and the source artifact is gitignored. The extraction.py pin was refreshed on 2026-09-27 after a fallback-only parser change: the recorded run's replies were well-formed objects with in-range numeric confidence (the old parser would have crashed otherwise), for which the old and new parser outputs are identical, so the metrics were not re-measured."
+  "notes": "Live paid run recorded 2026-09-21. No clause text is stored in the receipt. The latency cells here supersede the earlier 107.5 s / 9.0 s figures, which came from a superseded run (decision D1/R2). The provenance pin covers the current file content as of 2026-09-22, so it catches future drift; it cannot prove the historical revision that produced this number, because the run predates the recording of a commit and the source artifact is gitignored. The extraction.py pin was refreshed on 2026-09-27 after a fallback-only parser change: the recorded run's replies were well-formed objects with in-range numeric confidence (the old parser would have crashed otherwise), for which the old and new parser outputs are identical, so the metrics were not re-measured. On 2026-10-01, both extraction/QA pins were refreshed after an offline synthetic comparison of successful default (strict=False, non-resume) behavior against upstream db184390e7b23e052c68ef3b04022dc5befec9c1: 21 extraction cases, 67 QA cases, 288 default prompt cases across 24 modes, and the successful Gateway wrapper seam matched, including assessment fields, QA object identity, messages and call parameters. This bounded compatibility check did not rerun the paid benchmark or establish current-fork accuracy, latency, cost, or strict/resume performance. All metrics, sample, command, date, unknown producing commit and unrecorded models remain the historical upstream record. These pins detect drift in current LF source content; they do not prove which revision produced the historical results."
 }

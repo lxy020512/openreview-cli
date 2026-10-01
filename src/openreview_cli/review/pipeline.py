@@ -14,6 +14,7 @@ import asyncio
 import logging
 import sys
 from collections import Counter
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +22,7 @@ from openreview_cli.pipeline.base import PipelineContext, Stage
 
 if TYPE_CHECKING:
     from openreview_cli.recovery.coordinator import RecoveryCoordinator
+    from openreview_cli.review.checkpoints import CheckpointSession
     from openreview_cli.review.models import ClauseAssessment, Playbook, ReviewReport
 
 logger = logging.getLogger(__name__)
@@ -59,6 +61,7 @@ class ReviewStage(Stage):
         session_id: str | None = None,
         recovery_coordinator: RecoveryCoordinator | None = None,
         provider_list: list[str] | None = None,
+        checkpoints: CheckpointSession | None = None,
     ) -> None:
         """Initialise the review stage.
 
@@ -103,6 +106,7 @@ class ReviewStage(Stage):
         self._session_id = session_id
         self._recovery_coordinator = recovery_coordinator
         self._provider_list = provider_list
+        self._checkpoints = checkpoints
         # Injected by the pipeline runner (T2.4) when the coordinator is wired.
         self._recovery_ctx: Any = None
         self.report: ReviewReport | None = None
@@ -121,6 +125,8 @@ class ReviewStage(Stage):
         self.clauses = list(clauses) if clauses else []
 
         if not self.clauses:
+            if self._checkpoints is not None:
+                self._checkpoints.finish(True)
             return self._empty_report()
 
         assessments: list[ClauseAssessment] = []
@@ -133,6 +139,10 @@ class ReviewStage(Stage):
                 )
 
             category = await asyncio.to_thread(match_category, clause.text, self._playbook)
+            if self._checkpoints is not None:
+                assessment = await self._review_checkpointed(clause, category)
+                assessments.append(assessment)
+                continue
             assessment = await asyncio.to_thread(
                 extract_clause,
                 clause_text=clause.text,
@@ -160,6 +170,9 @@ class ReviewStage(Stage):
 
             assessments.append(assessment)
 
+        if self._checkpoints is not None:
+            self._checkpoints.finish(all(a.error is None for a in assessments))
+
         report = self._build_report(assessments)
         self.report = report
         return {
@@ -167,6 +180,53 @@ class ReviewStage(Stage):
             "review_assessments": assessments,
             "source_clauses": self.clauses,
         }
+
+    async def _review_checkpointed(self, clause: Any, category: Any) -> ClauseAssessment:
+        from openreview_cli.review.extraction import extract_clause
+        from openreview_cli.review.qa import verify_assessment
+
+        checkpoints = self._checkpoints
+        assert checkpoints is not None
+        category_id = category.id if category is not None else "no-match"
+        if category is not None:
+            cached_qa = checkpoints.load(clause, "qa", category_id)
+            if cached_qa is not None:
+                return cached_qa
+        assessment = checkpoints.load(clause, "extraction", category_id)
+        if assessment is None:
+            checkpoints.begin(clause, "extraction", category_id)
+            assessment = await asyncio.to_thread(
+                extract_clause,
+                clause.text,
+                clause.id,
+                category,
+                self._extraction_model,
+                mode=self._mode,
+                session_id=self._session_id,
+                coordinator=self._recovery_coordinator,
+                recovery_ctx=self._recovery_ctx,
+                provider_list=self._provider_list,
+                strict=True,
+            )
+            checkpoints.save(clause, "extraction", assessment)
+        if category is None or assessment.error is not None:
+            return assessment
+        # QA mutates its input; never mutate the reusable extraction snapshot.
+        assessment = deepcopy(assessment)
+        checkpoints.begin(clause, "qa", category_id)
+        assessment = await asyncio.to_thread(
+            verify_assessment,
+            assessment,
+            category,
+            self._qa_model,
+            session_id=self._session_id,
+            coordinator=self._recovery_coordinator,
+            recovery_ctx=self._recovery_ctx,
+            provider_list=self._provider_list,
+            strict=True,
+        )
+        checkpoints.save(clause, "qa", assessment)
+        return assessment
 
     def cleanup(self, ctx: PipelineContext) -> None:
         """Release large clause and document references after merge."""

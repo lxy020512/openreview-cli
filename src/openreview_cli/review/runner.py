@@ -6,6 +6,7 @@ import asyncio
 import logging
 import sys
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,13 +18,18 @@ if TYPE_CHECKING:
 from openreview_cli.pipeline.adapters.parse import ParseStage
 from openreview_cli.pipeline.adapters.strip import StripStage
 from openreview_cli.pipeline.runner import Pipeline
+from openreview_cli.review.checkpoints import (
+    CheckpointError,
+    CheckpointSession,
+    implementation_manifest,
+)
 from openreview_cli.review.models import ReviewReport
 from openreview_cli.review.playbook import load_bundled, load_playbook, load_playbook_from_db
 
 logger = logging.getLogger(__name__)
 
 
-def run_review(  # noqa: PLR0912
+def run_review(  # noqa: PLR0912, PLR0915 - existing orchestration plus opt-in session, preserving the default path
     paths: Sequence[str],
     playbook_path: str | None = None,
     playbook_id: str | None = None,
@@ -39,6 +45,8 @@ def run_review(  # noqa: PLR0912
     allow_partial_pii: bool = False,
     allow_password_prompt: bool = True,
     progress_callback: ProgressCallback | None = None,
+    resume: bool = False,
+    force_review: bool = False,
 ) -> list[ReviewReport]:
     """Run the PAKTON 3-agent review pipeline on one or more documents.
 
@@ -93,6 +101,8 @@ def run_review(  # noqa: PLR0912
     list[ReviewReport]
         One report per document, in input order.
     """
+    if force_review and not resume:
+        raise ValueError("--force-review requires --resume")
     if qa_model is None:
         qa_model = extraction_model
 
@@ -117,6 +127,7 @@ def run_review(  # noqa: PLR0912
     reports: list[ReviewReport] = []
 
     n_paths = len(paths)
+    manifest = implementation_manifest() if resume else None
     for path_str in paths:
         doc_path = Path(path_str)
         if not doc_path.exists():
@@ -136,6 +147,32 @@ def run_review(  # noqa: PLR0912
             logger.info("Minted session ID %s for %s", doc_session_id, doc_path.name)
 
         try:
+            checkpoints = None
+            if resume:
+                from openreview_cli.config.paths import get_config_dir, get_data_dir
+
+                # Re-evaluate mutable playbook/options at each boundary; source
+                # and dependency manifest is fixed at invocation startup.
+                checkpoints = CheckpointSession(
+                    doc_path,
+                    settings=lambda: {
+                        "playbook": asdict(playbook),
+                        "playbook_version": playbook_version,
+                        "mode": mode,
+                        "confidence_threshold": confidence_threshold,
+                        "mode_threshold_overrides": mode_threshold_overrides,
+                        "no_pii": no_pii,
+                        "allow_partial_pii": allow_partial_pii,
+                        "grounding_mode": grounding_mode,
+                    },
+                    slots=(extraction_model, qa_model),
+                    db_path=get_data_dir() / "openreview.db",
+                    key_path=get_config_dir() / "review-checkpoints.key",
+                    session_id=session_id if n_paths == 1 else None,
+                    force=force_review,
+                    manifest=manifest,
+                )
+                doc_session_id = checkpoints.run.session_id
             result = _run_review_doc_pipeline(
                 doc_path=doc_path,
                 playbook=playbook,
@@ -151,7 +188,10 @@ def run_review(  # noqa: PLR0912
                 allow_partial_pii=allow_partial_pii,
                 allow_password_prompt=allow_password_prompt,
                 progress_callback=progress_callback,
+                **({"checkpoints": checkpoints} if checkpoints is not None else {}),
             )
+        except CheckpointError:
+            raise
         except Exception as exc:
             logger.error("Failed to process %s: %s", doc_path, exc, exc_info=True)
             if verbose:
@@ -232,6 +272,7 @@ def _run_review_doc_pipeline(
     allow_partial_pii: bool = False,
     allow_password_prompt: bool = True,
     progress_callback: ProgressCallback | None = None,
+    checkpoints: CheckpointSession | None = None,
 ) -> tuple[ReviewReport, list[Any]] | None:
     """Run a pipeline for a single document using the pipeline framework.
 
@@ -312,6 +353,7 @@ def _run_review_doc_pipeline(
         session_id=session_id,
         recovery_coordinator=coordinator,
         provider_list=provider_list,
+        checkpoints=checkpoints,
     )
 
     stages: list[Any] = [ParseStage(allow_password_prompt=allow_password_prompt)]
@@ -340,6 +382,8 @@ def _run_review_doc_pipeline(
     pipeline_ctx: dict[str, Any] = {"document_path": str(doc_path)}
     try:
         asyncio.run(pipeline.run(pipeline_ctx))
+    except CheckpointError:
+        raise
     except Exception:
         logger.exception("Pipeline failed for %s", doc_path)
         return None

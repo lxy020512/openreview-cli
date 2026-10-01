@@ -66,6 +66,7 @@ def extract_clause(
     coordinator: Any = None,
     recovery_ctx: Any = None,
     provider_list: list[str] | None = None,
+    strict: bool = False,
 ) -> ClauseAssessment:
     """Run extraction for a single clause against a playbook category.
 
@@ -119,8 +120,10 @@ def extract_clause(
         walkaway_desc=category.walkaway.description,
         walkaway_exemplars=category.walkaway.exemplars,
         default_position=category.default_position.value,
+        strict=strict,
     )
 
+    invalid_response = False
     try:
         raw_response = call_gateway_chat(
             extraction_model,
@@ -130,14 +133,20 @@ def extract_clause(
             coordinator=coordinator,
             recovery_ctx=recovery_ctx,
             provider_list=provider_list,
+            **({"safe_errors": True} if strict else {}),
         )
         parsed = _parse_response_or_none(raw_response)
-        if parsed is None:
+        if parsed is None or (strict and not _strict_response_valid(raw_response)):
+            invalid_response = True
             raise ValueError(  # noqa: TRY301 - routed through the handler below, which records it
                 "extraction response was unusable (not a JSON object or an out-of-range confidence)"
             )
     except Exception as exc:
-        logger.warning("Extraction failed for %s: %s", clause_id, exc)
+        error = "extraction_invalid_response" if invalid_response else "extraction_call_failed"
+        if strict:
+            logger.warning("Extraction failed: %s", error)
+        else:
+            logger.warning("Extraction failed for %s: %s", clause_id, exc)
         return ClauseAssessment(
             clause_id=clause_id,
             clause_text=clause_text,
@@ -148,7 +157,7 @@ def extract_clause(
             qa_verdict=QAVerdict.uncertain,
             extraction_model=extraction_model,
             qa_model=extraction_model,
-            error=str(exc),
+            error=error if strict else str(exc),
         )
 
     try:
@@ -167,6 +176,21 @@ def extract_clause(
         extraction_model=extraction_model,
         qa_model=extraction_model,
     )
+
+
+def _strict_response_valid(raw: str) -> bool:
+    try:
+        data = json.loads(strip_fences(raw))
+        return (
+            isinstance(data, dict)
+            and data.get("position") in {p.value for p in Position}
+            and type(data.get("confidence")) in (int, float)
+            and 0 <= data["confidence"] <= 1
+            and isinstance(data.get("citation"), str)
+            and type(data.get("category_match")) is bool
+        )
+    except (ValueError, TypeError):
+        return False
 
 
 def _parse_response(raw: str) -> dict[str, Any]:

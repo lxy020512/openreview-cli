@@ -251,15 +251,30 @@
             "capabilities": {
                 "embedding": false,
                 "reasoning": true,
-                "context_window": 64000,
+                "context_window": 1000000,
                 "tool_call": true
             },
             "models": {
+                "deepseek-flash": {
+                    "slots": ["extraction", "reasoning", "grounding", "graph"],
+                    "context": 1000000,
+                    "recommended": true,
+                    "status": "active",
+                    "note": "Current alias, checked 2026-09-30; DeepSeek-V4.1-Flash. Alias versions may change."
+                },
+                "deepseek-v4-pro": {
+                    "slots": ["extraction", "reasoning", "grounding", "graph"],
+                    "context": 1000000,
+                    "recommended": false,
+                    "status": "active",
+                    "note": "Current alias, checked 2026-09-30; DeepSeek-V4-Pro-0813. Alias versions may change."
+                },
                 "deepseek-chat": {
                     "slots": ["extraction", "reasoning", "qa"],
                     "context": 64000,
-                    "recommended": true,
-                    "status": "active"
+                    "recommended": false,
+                    "status": "deprecated",
+                    "note": "Legacy configuration entry only; officially retired 2026-07-24. Use a current alias for new setup."
                 }
             }
         },

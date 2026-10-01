@@ -1,0 +1,13 @@
+{
+  "kind": "fresh-process-checkpoint-validation",
+  "external_sdk_dispatch_allowed": false,
+  "sdk_dispatch_attempts": 0,
+  "grounding": false,
+  "pii_stripping_enabled": true,
+  "exit_code": 0,
+  "elapsed_seconds": 9.071,
+  "assessments": 5,
+  "failed_assessments": 0,
+  "normalized_assessments_equal": true,
+  "status": "passed"
+}

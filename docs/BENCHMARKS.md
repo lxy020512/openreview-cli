@@ -138,7 +138,9 @@ Last verified: 2026-09-28 @ 882568c (receipt: docs/benchmarks/results/pii-accura
 
 ## Review accuracy (measured 12 labeled NDA clauses)
 
-Real extraction + QA pipeline (provider and model were not recorded in the source artifact) against `tests/fixtures/review/nda-corpus-v1/nda-corpus-v1.json` with `precheck-nda-v1` playbook. 24 API calls (per-clause extraction + QA).
+**Historical upstream measurement (2026-09-21):** real extraction + QA pipeline (provider and model were not recorded in the source artifact) against `tests/fixtures/review/nda-corpus-v1/nda-corpus-v1.json` with `precheck-nda-v1` playbook. 24 API calls (per-clause extraction + QA).
+
+These are historical upstream results, not a new measurement of this fork. The extraction/QA content pins were refreshed on 2026-10-01 after a bounded offline synthetic comparison of successful default (`strict=False`, non-resume) behavior with upstream `db184390e7b23e052c68ef3b04022dc5befec9c1`. The unknown producing commit and unrecorded models remain unknown; the pins detect current source drift and do not establish historical provenance. No paid benchmark was rerun. This table does not measure current-fork accuracy, latency, cost, or strict/resume performance.
 
 | Metric | Value | Target (spec) | Status |
 |---|---|---|---|

@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 from openreview_cli.pipeline.base import PipelineContext, Stage, StageResult, dispose_context_keys
 from openreview_cli.pipeline.errors import (
+    CheckpointError,
     CriticalStageError,
     MemoryBudgetError,
     StageError,
@@ -293,6 +294,10 @@ class Pipeline:
             raw = await stage.run(context)
             if raw is not None:
                 result = raw
+        except CheckpointError:
+            # A persistence/identity safety failure must not be stage-retried or
+            # converted to a partial report that implies resumability.
+            raise
         except CriticalStageError as exc:
             error = str(exc)
             critical = True
