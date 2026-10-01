@@ -33,12 +33,14 @@ def test_bundled_playbook_count() -> None:
 
 
 def test_migration_count() -> None:
-    """The app DB ships 14 migrations (001-015, no 012); ARCHITECTURE.md must match."""
+    """The app DB ships 15 migrations (001-016, no 012); ARCHITECTURE.md must match."""
     migrations_dir = REPO_ROOT / "src" / "openreview_cli" / "storage" / "migrations"
     sql_files = sorted(migrations_dir.glob("*.sql"))
-    assert len(sql_files) == 14
+    assert len(sql_files) == 15
     names = [f.stem for f in sql_files]
-    assert "012" not in names
+    assert "016_review_checkpoints" in names
+    versions = {int(name.split("_")[0]) for name in names}
+    assert 12 not in versions
 
 
 def test_settlementcheck_v2_in_readme_table() -> None:

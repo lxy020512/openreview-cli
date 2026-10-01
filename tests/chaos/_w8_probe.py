@@ -67,8 +67,8 @@ XDG_VARS: tuple[str, ...] = (
     "XDG_CACHE_HOME",
 )
 
-# ``015_graph_nodes_parent_id.sql`` is the highest migration shipped today.
-LATEST_USER_VERSION = 15
+# ``016_review_checkpoints.sql`` is the highest migration shipped today.
+LATEST_USER_VERSION = 16
 
 # The review path can write any of these; the other tables are seeded by the CLI
 # smoke path (clients) or never touched by a review run.
@@ -98,6 +98,8 @@ EXPECTED_TABLES: frozenset[str] = frozenset(
         "prompt_bindings",
         "prompt_versions",
         "recovery_state",
+        "review_checkpoint_runs",
+        "review_checkpoint_steps",
         "review_diffs",
         "review_reports",
         "reviews",

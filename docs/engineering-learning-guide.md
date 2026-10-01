@@ -168,3 +168,13 @@ session 是同一文件这次审查的费用归属标签。重跑若重新生成
 6. 说明本次贡献、上游贡献和待验证部分；具体成果只引用实际记录。
 
 每次改动的依据和提交格式见 [change-rationale.md](change-rationale.md)。基准、测试和云端验证完成后应同步更新本文状态，保留失败和限制，避免留下过时的成功声明。
+
+## CI 的 schema 与基准 pin 失败怎样定位
+
+**观察到的遗漏。** [首次 CI](https://github.com/lxy020512/openreview-cli/actions/runs/36747711786) 中 lint、types、memory、integration、tui 通过，但 test 有 3082 passed/2 failed/5 skipped/3 xfailed/6 deselected，chaos 有 91 passed/11 failed/1 deselected。检查点 schema 的公共声明和 chaos oracle 没同步；历史 review-accuracy receipt 的两个生产模块 pin 也过期。前者已对齐声明/oracle，独立局部检查 47 passed（2.13 秒）；局部成功不能替代下一轮 CI。
+
+**定位与修复。** receipt guard 按文件原始字节核验，Windows CRLF 与 Git/CI 的 LF 会产生额外 hash 失败。因此在 C 盘另建 LF validation worktree，确认十份 receipt 的 13 个 provenance 条目涉及的 10 个唯一文件均与 HEAD Git blob 一致（3 个路径重复出现），原 guard 的有效 RED 是 32 passed/1 failed（1.96 秒），只报 extraction/QA 两项旧 pin；E 盘源码换行与 runtime 配置不变。用 binary git-show 在内存加载上游基线模块，独立绑定基线 prompts/Gateway，不读取 auth、不发网络请求；21 extraction/67 QA 合成场景、省略 strict/显式 False、288 默认 prompt 案例与成功 Gateway 接缝的受测结果相同。新增固定回归保存该行为，阈值临时内存副本的负向控制能够触发失败。
+
+**数据边界。** 刷新两个 pin 只恢复当前源码 drift 检查，不补造历史 producer commit 或模型，不重新发布准确率。原 2026-09-21 的日期、12 条样本、24 次历史 API 调用和全部指标保持上游历史意义；当前 fork 准确率、费用、延迟和 strict/resume 性能仍不能从这张表推出。guard、生产代码和工具配置保持原有约束。本节记录修复提交时的证据；第二轮结论以 PR checks 和实际 run 为准，不预先宣称全绿；本轮集中修复的提交用 `git log -- docs/engineering-learning-guide.md` 查询。
+
+**面试回答。** “我先确认失败是 schema 契约遗漏、源码 drift 还是平台换行，再保留有效 RED。兼容性对照只能支持受测默认成功路径，不等于重新测过模型质量；hash 能检测变化，也不能证明未知的历史生产版本。”

@@ -12,7 +12,7 @@
 4. **限制**：未验证项、已知失败、剩余风险；记录失败原因，不通过放宽断言或配置制造全绿。
 5. **来源与归属**：上游代码保持署名；引用外部协议或能力变化的官方来源；不记录密钥、原始合同、PII 映射或原始供应商错误。
 
-GitHub 按三个完整功能节点提交：Windows 复现前置修复、DeepSeek adapter、检查点功能及其严格提示词修复。日常修改先在本地积累，功能完成、验证和独立审查通过后，再形成可解释的提交与推送；讲解文档归入对应节点，每个节点包含相应测试与依据，不能留下 broken imports 或被提前调用的未完成模块。不要为“持续更新”拆成无意义提交、补写历史日期或编造故障。
+GitHub 初始按三个完整功能节点提交：Windows 复现前置修复、DeepSeek adapter、检查点功能及其严格提示词修复。三个节点已分别以 `96fe67d`、`073879d`、`185adb1` 提交并推送，集中在 [Draft PR #1](https://github.com/lxy020512/openreview-cli/pull/1)；随后只为实际 CI 失败形成集中修复节点。日常修改先在本地积累，功能完成、验证和独立审查通过后，再形成可解释的提交与推送；讲解文档归入对应节点，每个节点包含相应测试与依据，不能留下 broken imports 或被提前调用的未完成模块。不要为“持续更新”拆成无意义提交、补写历史日期或编造故障。
 
 GitHub 推送以前先检查 diff、秘密与许可，完成仓库要求的 pre-commit；预提交 hook 安装或运行受阻时记录真实原因，不声称通过。提交说明用文件传给 `git commit -F`，避免 shell 转义破坏多行内容。推送后的 hash、分支/PR 链接与验证结果再填入账本。
 
@@ -59,3 +59,13 @@ DeepSeek 提交前的 E 盘检查记录：43 个实际变更文件的适用 hook
 检查点基准运行并核验后，只填实际调用计数及配置，例如 grounding 是否关闭；真实模型运行后再增加 provider/model、样本、token/usage、账单和人工标注。敏感数据与运行产物继续放忽略目录，仓库文档仅保留安全计数和可复现方法。
 
 环境历史不能覆盖当前状态：初始 Windows 记录的“模型未安装”属于当时状态；后来 `pii-baseline.md` 已验证安装和 Parse + Strip。类似地，本文“待验证”在收尾后应由实际结果更新，不保留互相矛盾的现状声明。
+
+## 首轮 CI 暴露的两个遗漏与集中修复
+
+[首次 GitHub CI](https://github.com/lxy020512/openreview-cli/actions/runs/36747711786) 的 lint、types、memory、integration、tui 五项通过；test 为 3082 passed、2 failed、5 skipped、3 xfailed、6 deselected，chaos 为 91 passed、11 failed、1 deselected。这不是全绿。有效失败揭示两个遗漏：检查点新增 schema 未同步公共声明/chaos schema oracle；严格分支改动后，历史 review-accuracy receipt 的 extraction/QA 内容 pin 过期。
+
+schema 修复对齐声明与 oracle，保留 schema 拒绝未知值的边界；独立局部验证为 47 passed（2.13 秒），该证据与 receipt 验证分开。receipt 修复先在隔离 LF 工作树运行原完整 guard，得到 32 passed、1 failed（1.96 秒），失败只列两项 stale pin。再用上游 `db184390e7b23e052c68ef3b04022dc5befec9c1` 独立加载模块，离线对照 21 extraction/67 QA 场景、24 模式的 288 默认 prompt 案例及 Gateway 成功接缝；省略 strict 和显式 False 的受测成功行为一致。固定回归保存这些有限合成契约，保留 QA 原对象、旧 qa_model 及默认 Amber 边界。
+
+仅刷新两个 LF 内容 pin 并追加范围说明；未知生产 commit、未记录模型、历史日期/样本/命令/指标全部保留，不改生产代码、receipt guard 或测试配置。原十份 receipt 的 13 个 provenance 条目涉及 10 个唯一文件（3 个路径重复出现）；这些被 pin 文件在 E 盘为 CRLF；直接 raw-byte guard 会混入换行差异。使用 `git -c core.autocrlf=false worktree add --detach <validation-path> HEAD` 创建的 C 盘 LF 验证树，其被 pin 字节与 HEAD Git blob 一致；E 盘仍是真实源码工作树，未改换行或配置，也未把 CRLF hash 写入 receipt。
+
+该检查不重跑付费基准，不能推出当前 fork 的准确率、成本、延迟或 strict/resume 性能。本节记录修复提交时的证据；第二轮结论以 PR checks 和实际 run 为准，不预先宣称全绿。本轮集中修复归属以 `git log -- docs/change-rationale.md` 核验，避免伪造本提交的自引用 hash。
